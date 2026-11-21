@@ -25,6 +25,11 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'pull_request'
         run: python tools/check_revision.py
 
+      - name: Read version
+        id: ver
+        shell: bash
+        run: python tools/print_version.py >> "$GITHUB_OUTPUT"
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
@@ -33,17 +38,17 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DriverFinder-Setup
+          name: DriverFinder-Setup-${{ steps.ver.outputs.tag }}
           path: dist/installer/DriverFinder-Setup.exe
           if-no-files-found: error
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.3.0
-          name: Driver Finder 2.3.0
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.label }}
           body: |
-            Windows installer for Driver Finder 2.3.0.
+            Windows installer for ${{ steps.ver.outputs.build_info }}.
 
             Download DriverFinder-Setup.exe, run it, and launch Driver Finder from the desktop shortcut. Python is not required.
           files: dist/installer/DriverFinder-Setup.exe
