@@ -238,6 +238,7 @@ class InstallationDialog(tk.Toplevel):
         self.log_text.see(tk.END)
 
     DOWNLOAD_WORKERS = 3
+    STATUS_WAIT_TIMEOUT = 180
 
     def start_pipeline(self):
         self._build_jobs()
@@ -394,6 +395,21 @@ class InstallationDialog(tk.Toplevel):
 
     # --- Phase 2: Live Elevated Installation ---
 
+    def _elevated_helper_running(self):
+        """True when a second copy of our own exe is alive (the UAC-approved worker)."""
+        try:
+            image = os.path.basename(sys.executable)
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq " + image, "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                creationflags=0x08000000,
+            )
+            return result.stdout.lower().count(image.lower()) > 1
+        except Exception:
+            return False
+
     def start_elevated_installation(self, ready_devices):
         if not ready_devices:
             self.log("\n❌ No driver packages available to install.")
@@ -420,11 +436,36 @@ class InstallationDialog(tk.Toplevel):
             return
 
         # Start polling loop for install_status.json
+        self._status_wait_started = time.time()
         self.poll_worker_status(total)
 
     def poll_worker_status(self, total):
         status_file = os.path.join(self.download_base, "install_status.json")
         log_file = os.path.join(self.download_base, "install_log.txt")
+
+        # The helper writes its status immediately. If nothing arrives and no
+        # elevated copy of us is running, say so instead of spinning forever.
+        if not os.path.exists(status_file):
+            waited = time.time() - getattr(self, "_status_wait_started", time.time())
+            if waited > self.STATUS_WAIT_TIMEOUT:
+                if self._elevated_helper_running():
+                    self._status_wait_started = time.time()
+                else:
+                    self.progress_item.stop()
+                    self.log("\n❌ The elevated installer never started. Nothing was installed.")
+                    self.lbl_step.config(text="❌ Installation did not start")
+                    self.lbl_item_details.config(
+                        text="The UAC-approved helper never reported back."
+                    )
+                    messagebox.showerror(
+                        "Driver installation did not start",
+                        "Windows reported the permission prompt as approved, but the installer "
+                        "helper never reported back.\n\n"
+                        "Nothing was installed and no drivers were changed.\n\n"
+                        "Close this dialog and try again."
+                    )
+                    self.on_pipeline_completed()
+                    return
 
         # Stream new lines from install_log.txt
         if os.path.exists(log_file):

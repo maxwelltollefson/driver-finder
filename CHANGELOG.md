@@ -4,6 +4,9 @@ Driver Finder. Every change bumps the revision number; the size of the jump
 shows the scale: **small +1**, **notable +3**, **major +10**. Bump with
 `python bump_version.py --kind small|notable|major --note "..."`.
 
+## v2.7.0 · Rev 2026.11.21-R23
+- Fix driver install hanging at UAC: worker path with spaces was split into two arguments  _(revision +3, notable)_
+
 ## v2.6.0 · Rev 2026.11.21-R20
 - Exe now carries its own version and revision in file properties  _(revision +3, notable)_
 

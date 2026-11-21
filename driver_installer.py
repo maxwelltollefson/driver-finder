@@ -109,6 +109,23 @@ def _ps_quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _quote_arg(value):
+    """Quote one argument for the command line Start-Process assembles.
+
+    Start-Process joins -ArgumentList values with spaces and does NOT quote
+    them, so a path containing a space ("...\\Local\\Driver Finder\\downloads")
+    would arrive at the child as two separate arguments.
+    """
+    text = str(value)
+    if not text or " " in text or "\t" in text:
+        return '"' + text.replace('"', '\\"') + '"'
+    return text
+
+
+def _build_argument_string(args):
+    return " ".join(_quote_arg(a) for a in args)
+
+
 def launch_elevated_worker(download_dir):
     """
     Launches the installer elevated via UAC with no console window.
@@ -136,7 +153,7 @@ def launch_elevated_worker(download_dir):
         file_path = pythonw_exe
         arg_list = [worker_script, download_dir]
 
-    args_ps = ",".join(_ps_quote(arg) for arg in arg_list)
+    args_ps = _ps_quote(_build_argument_string(arg_list))
     ps_cmd = (
         f"Start-Process -FilePath {_ps_quote(file_path)} "
         f"-ArgumentList {args_ps} -Verb RunAs -WindowStyle Hidden"
@@ -150,7 +167,12 @@ def launch_elevated_worker(download_dir):
             creationflags=CREATE_NO_WINDOW,
             startupinfo=get_silent_startupinfo()
         )
-        return proc.returncode == 0
+        if proc.returncode != 0:
+            print(f"Elevation failed (exit {proc.returncode}): {ps_cmd}")
+            if proc.stderr.strip():
+                print(proc.stderr.strip())
+            return False
+        return True
     except Exception as e:
         print(f"Error launching elevated worker: {e}")
         return False
