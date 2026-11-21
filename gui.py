@@ -21,10 +21,7 @@ import driver_scanner
 import driver_installer
 import create_shortcut
 import paths
-
-APP_VERSION = "2.3.0"
-APP_REVISION = "2026.11.21-R4"
-APP_BUILD_INFO = f"v{APP_VERSION} [Rev {APP_REVISION}]"
+from version import APP_VERSION, APP_REVISION, APP_BUILD_INFO
 
 class InstallationDialog(tk.Toplevel):
     """

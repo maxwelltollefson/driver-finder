@@ -12,6 +12,23 @@ Driver packages are downloaded at runtime from Microsoft Update Catalog. They ar
 
 To run from source: `python main.py` (Windows, Python 3 with tkinter).
 
+## Versioning
+
+Every change gets a new revision number, and the jump size shows the scale:
+
+- **small +1** — wording, typo, one-line fix
+- **notable +3** — user-visible fix, behaviour change, new feature
+- **major +10** — overhaul (add `--breaking` when it breaks compatibility)
+
+```bash
+python bump_version.py --kind notable --note "What changed"
+```
+
+That updates `version.py` (single source of truth), the installer version in
+`installer/DriverFinder.iss`, and `CHANGELOG.md`. CI runs
+`tools/check_revision.py` and fails the build if app code changes without a
+revision bump.
+
 ---
 
 ## What's New in Rev 2026.11.21-R4 (v2.3.0)

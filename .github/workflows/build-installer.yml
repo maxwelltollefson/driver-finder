@@ -14,10 +14,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Revision bumped?
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        run: python tools/check_revision.py
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
