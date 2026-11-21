@@ -1,0 +1,45 @@
+name: Build installer
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Setup.exe
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DriverFinder-Setup
+          path: dist/installer/DriverFinder-Setup.exe
+          if-no-files-found: error
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v2.3.0
+          name: Driver Finder 2.3.0
+          body: |
+            Windows installer for Driver Finder 2.3.0.
+
+            Download DriverFinder-Setup.exe, run it, and launch Driver Finder from the desktop shortcut. Python is not required.
+          files: dist/installer/DriverFinder-Setup.exe
+          make_latest: true
+          overwrite_files: true
