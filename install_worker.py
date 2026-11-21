@@ -82,6 +82,7 @@ def main():
     devices = plan.get("devices", [])
     total = len(devices)
     reboot_required = False
+    installed_ok = 0
 
     update_status(status_file, {
         "state": "starting",
@@ -144,6 +145,9 @@ def main():
                 log_f.write(f"    Exit code: {proc.returncode}\n")
                 log_f.flush()
 
+                if proc.returncode in (0, 3010):
+                    installed_ok += 1
+
                 if proc.returncode == 3010 or "reboot required" in output.lower():
                     reboot_required = True
 
@@ -154,9 +158,18 @@ def main():
             # Small pause to allow file writes
             time.sleep(0.3)
 
-    # Check system registry for pending reboot
-    if not reboot_required and check_system_reboot_pending():
+    # Only claim a reboot when we actually installed something: machines often
+    # carry an unrelated pending reboot (pending file renames from Edge or
+    # Windows Update) that has nothing to do with these drivers.
+    if not reboot_required and installed_ok and check_system_reboot_pending():
         reboot_required = True
+
+    if total == 0:
+        final_line = "No driver packages were queued."
+    elif installed_ok == 0:
+        final_line = "No driver packages could be installed. See install_log.txt."
+    else:
+        final_line = f"Installed {installed_ok} of {total} driver package(s)."
 
     # Mark as completed
     update_status(status_file, {
@@ -166,7 +179,8 @@ def main():
         "completed_count": total,
         "current_device": "Complete",
         "percent": 100,
-        "log_line": "All driver packages have been installed into the system.",
+        "installed_count": installed_ok,
+        "log_line": final_line,
         "reboot_required": reboot_required
     })
 
