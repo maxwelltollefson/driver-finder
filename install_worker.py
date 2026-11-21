@@ -83,6 +83,7 @@ def main():
     total = len(devices)
     reboot_required = False
     installed_ok = 0
+    already_current = 0
 
     update_status(status_file, {
         "state": "starting",
@@ -147,6 +148,10 @@ def main():
 
                 if proc.returncode in (0, 3010):
                     installed_ok += 1
+                elif proc.returncode == 259:
+                    # ERROR_NO_MORE_ITEMS: "already exists / up-to-date on device"
+                    # — pnputil did its job, there was just nothing to change.
+                    already_current += 1
 
                 if proc.returncode == 3010 or "reboot required" in output.lower():
                     reboot_required = True
@@ -170,6 +175,8 @@ def main():
         final_line = "No driver packages could be installed. See install_log.txt."
     else:
         final_line = f"Installed {installed_ok} of {total} driver package(s)."
+        if already_current:
+            final_line += f" {already_current} were already current."
 
     # Mark as completed
     update_status(status_file, {
@@ -180,6 +187,7 @@ def main():
         "current_device": "Complete",
         "percent": 100,
         "installed_count": installed_ok,
+        "already_current_count": already_current,
         "log_line": final_line,
         "reboot_required": reboot_required
     })

@@ -4,6 +4,9 @@ Driver Finder. Every change bumps the revision number; the size of the jump
 shows the scale: **small +1**, **notable +3**, **major +10**. Bump with
 `python bump_version.py --kind small|notable|major --note "..."`.
 
+## v2.11.2 · Rev 2026.11.21-R38
+- Count pnputil 259 (already current) as success instead of a miss  _(revision +1, small)_
+
 ## v2.11.1 · Rev 2026.11.21-R37
 - Add a headless --check-updates diagnostic and log update-check failures  _(revision +1, small)_
 
