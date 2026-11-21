@@ -60,6 +60,7 @@ VENDOR_PCI_MAP = {
 # Kept as data so per-OEM quirks stop scattering through the check logic.
 OEM_HWID_RULES = [
     {
+        "oem": "dell",
         "match": "DEV_5916",
         "only_if_version": "27.20.100.9664",
         "latest_version": "27.20.100.9664",
@@ -68,6 +69,7 @@ OEM_HWID_RULES = [
         "note": "Dell validated driver is current (v27.20.100.9664). To install generic Intel DCH drivers, use Intel DSA.",
     },
     {
+        "oem": "dell",
         "match": "10EC&DEV_0256",
         "download_url": "https://catalog.s.download.windowsupdate.com/d/msdownload/update/driver/drvs/2026/03/5808e972-5160-4430-a579-48b8c7322503_2df41a34eaa30bddd4430c787718b3054c198312.cab",
         "latest_version": "6.0.9960.1",
@@ -143,6 +145,20 @@ def _read_smbios_serial():
         offset = pos + 2
 
     return ""
+
+
+_SYSTEM_MANUFACTURER = None
+
+
+def system_manufacturer():
+    """Cached manufacturer string, used to keep OEM-specific rules honest."""
+    global _SYSTEM_MANUFACTURER
+    if _SYSTEM_MANUFACTURER is None:
+        try:
+            _SYSTEM_MANUFACTURER = (get_system_info().get("manufacturer") or "").lower()
+        except Exception:
+            _SYSTEM_MANUFACTURER = ""
+    return _SYSTEM_MANUFACTURER
 
 
 def _read_serial_number():
@@ -268,61 +284,217 @@ def get_system_info():
     return info
 
 
-def scan_devices():
+LAST_SCAN_ERROR = ""
+
+
+def windows_build_number():
+    try:
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+        try:
+            return int(winreg.QueryValueEx(key, "CurrentBuildNumber")[0])
+        finally:
+            winreg.CloseKey(key)
+    except Exception:
+        return 0
+
+
+def get_architecture():
+    """'x64', 'x86' or 'ARM64' — the OS architecture, not the app's."""
+    arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE") or "").upper()
+    if arch == "ARM64":
+        return "ARM64"
+    if arch in ("AMD64", "X86_64", "IA64"):
+        return "x64"
+    if arch == "X86":
+        return "x86"
+    try:
+        import platform
+        machine = platform.machine().upper()
+        if "ARM" in machine:
+            return "ARM64"
+        return "x64" if "64" in machine else "x86"
+    except Exception:
+        return "x64"
+
+
+def _new_device_record(instance_id="", description="", class_name="", manufacturer="", status="Healthy",
+                       driver_name="", driver_provider="", driver_version="N/A", driver_date="N/A",
+                       hardware_ids=None):
+    return {
+        "instance_id": instance_id,
+        "description": description,
+        "class_name": class_name,
+        "manufacturer": manufacturer,
+        "status": status,
+        "driver_name": driver_name,
+        "driver_provider": driver_provider,
+        "driver_version": driver_version,
+        "driver_date": driver_date,
+        "hardware_ids": list(hardware_ids or []),
+        "category": "Other",
+        "vendor": "Unknown",
+        "vendor_url": "",
+        "primary_hwid": "",
+        "fallback_hwid": "",
+        "is_primary": False,
+        "is_storage": False,
+        "catalog_status": "Ready to Check",
+        "latest_version": "-",
+        "latest_date": "-",
+        "download_url": "",
+        "catalog_url": "",
+        "oem_note": "",
+        "is_inbox": False,
+    }
+
+
+def _split_driver_version(value):
+    """'03/31/2024 10.0.26100.1' -> ('03/31/2024', '10.0.26100.1')."""
+    match = re.match(r"^\s*(\d{1,4}[./-]\d{1,2}[./-]\d{1,4})\s+(\S+)\s*$", value or "")
+    if match:
+        return match.group(1), match.group(2)
+    return "N/A", (value or "N/A").strip()
+
+
+def _decode_console(raw):
+    """Windows tools write the OEM codepage, not UTF-8."""
+    if isinstance(raw, str):
+        return raw
+    candidates = ["utf-8"]
+    try:
+        import ctypes
+        candidates.append("cp%d" % ctypes.windll.kernel32.GetOEMCP())
+    except Exception:
+        pass
+    candidates.append("cp1252")
+    for encoding in candidates:
+        try:
+            return raw.decode(encoding)
+        except Exception:
+            continue
+    return raw.decode("latin-1", "replace")
+
+
+def _arch_matches(products, arch):
+    text = (products or "").lower()
+    if arch == "ARM64":
+        return "arm64" in text or "aarch64" in text
+    if arch == "x86":
+        return "x64" not in text and "arm64" not in text
+    return "arm64" not in text
+
+
+def _pnp_devices_xml():
+    """Locale-independent device list via pnputil's XML mode.
+
+    pnputil's *text* output is translated on non-English Windows, which made the
+    old label-based parser return zero devices. XML element names are fixed
+    schema names and the file is UTF-8, so this works on any locale.
+    Returns None when the build does not support it.
+    """
+    import tempfile
+    import xml.etree.ElementTree as ET
+
+    path = os.path.join(tempfile.gettempdir(), "driverfinder-pnp-%d.xml" % os.getpid())
+    try:
+        proc = subprocess.run(
+            ["pnputil", "/enum-devices", "/connected", "/drivers", "/deviceids",
+             "/format", "xml", "/output-file", path],
+            capture_output=True,
+            timeout=90,
+            creationflags=CREATE_NO_WINDOW,
+            startupinfo=get_silent_startupinfo()
+        )
+        if proc.returncode != 0 or not os.path.exists(path):
+            return None
+        tree = ET.parse(path)
+    except Exception:
+        return None
+    finally:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+    devices = []
+    try:
+        root = tree.getroot()
+        for node in root.findall("Device"):
+            def text_of(tag):
+                child = node.find(tag)
+                return (child.text or "").strip() if child is not None and child.text else ""
+
+            hardware_ids = [
+                (item.text or "").strip()
+                for item in node.findall("HardwareIds/HardwareId")
+                if item.text
+            ]
+
+            bound_driver = text_of("DriverName")
+            provider = ""
+            version = "N/A"
+            date = "N/A"
+            matching = node.findall("MatchingDrivers/DriverName")
+            chosen = None
+            for entry in matching:
+                if bound_driver and (entry.get("DriverName") or "").lower() == bound_driver.lower():
+                    chosen = entry
+                    break
+            if chosen is None and matching:
+                chosen = matching[0]
+            if chosen is not None:
+                child = chosen.find("ProviderName")
+                if child is not None and child.text:
+                    provider = child.text.strip()
+                child = chosen.find("DriverVersion")
+                if child is not None and child.text:
+                    date, version = _split_driver_version(child.text)
+            if not provider:
+                provider = text_of("ManufacturerName")
+
+            devices.append(_new_device_record(
+                instance_id=node.get("InstanceId", ""),
+                description=text_of("DeviceDescription"),
+                class_name=text_of("ClassName"),
+                manufacturer=text_of("ManufacturerName"),
+                status=text_of("Status") or "Healthy",
+                driver_name=bound_driver,
+                driver_provider=provider,
+                driver_version=version,
+                driver_date=date,
+                hardware_ids=hardware_ids,
+            ))
+    except Exception:
+        return None
+
+    return devices
+
+
+def _pnp_devices_text():
+    """Fallback for builds without /format xml. English Windows only."""
     try:
         proc = subprocess.run(
             ["pnputil", "/enum-devices", "/connected", "/drivers", "/ids"],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-            timeout=15,
+            timeout=20,
             creationflags=CREATE_NO_WINDOW,
             startupinfo=get_silent_startupinfo()
         )
-        output = proc.stdout
-    except Exception as e:
-        print(f"Error running pnputil: {e}")
+        output = _decode_console(proc.stdout)
+    except Exception as exc:
+        print(f"Error running pnputil: {exc}")
         return []
 
     entries = re.split(r'\n(?=Instance ID:\s+)', output)
     devices = []
-    seen_processor = False
-
     for entry in entries:
         if not entry.strip().startswith("Instance ID:"):
             continue
 
-        dev = {
-            "instance_id": "",
-            "description": "",
-            "class_name": "",
-            "manufacturer": "",
-            "status": "Healthy",
-            "driver_name": "",
-            "driver_provider": "",
-            "driver_version": "N/A",
-            "driver_date": "N/A",
-            "hardware_ids": [],
-            "category": "Other",
-            "vendor": "Unknown",
-            "vendor_url": "",
-            "primary_hwid": "",
-            "fallback_hwid": "",
-            "is_primary": False,
-            "catalog_status": "Ready to Check",
-            "latest_version": "-",
-            "latest_date": "-",
-            "download_url": "",
-            "catalog_url": "",
-            "oem_note": "",
-            "is_inbox": False
-        }
-
-        lines = entry.splitlines()
+        dev = _new_device_record()
         current_section = None
-
-        for line in lines:
+        for line in entry.splitlines():
             if line.startswith("Instance ID:"):
                 dev["instance_id"] = line.split(":", 1)[1].strip()
             elif line.startswith("Device Description:"):
@@ -345,21 +517,47 @@ def scan_devices():
             elif line.startswith("    Provider Name:") and current_section == "matching_drivers" and not dev["driver_provider"]:
                 dev["driver_provider"] = line.split(":", 1)[1].strip()
             elif line.startswith("    Driver Version:") and current_section == "matching_drivers" and dev["driver_version"] == "N/A":
-                val = line.split(":", 1)[1].strip()
-                parts = val.split()
-                if len(parts) >= 2:
-                    dev["driver_date"] = parts[0]
-                    dev["driver_version"] = parts[1]
-                else:
-                    dev["driver_version"] = val
+                date, version = _split_driver_version(line.split(":", 1)[1].strip())
+                dev["driver_date"] = date
+                dev["driver_version"] = version
             elif current_section == "hardware_ids" and line.startswith("    ") and not line.startswith("Matching Drivers"):
-                hid = line.strip()
-                if hid and ":" not in hid:
-                    dev["hardware_ids"].append(hid)
-            elif not line.startswith("    "):
-                if not line.startswith("Hardware IDs:"):
-                    current_section = None
+                hardware_id = line.strip()
+                if hardware_id and ":" not in hardware_id:
+                    dev["hardware_ids"].append(hardware_id)
+            elif not line.startswith("    ") and not line.startswith("Hardware IDs:"):
+                current_section = None
 
+        devices.append(dev)
+    return devices
+
+
+def scan_devices():
+    global LAST_SCAN_ERROR
+    LAST_SCAN_ERROR = ""
+
+    raw_devices = _pnp_devices_xml()
+    used_xml = raw_devices is not None
+    if raw_devices is None:
+        raw_devices = _pnp_devices_text()
+
+    if not raw_devices:
+        build = windows_build_number()
+        if 0 < build < 18362:
+            LAST_SCAN_ERROR = (
+                "This Windows build (%d) predates Windows 10 1903, which introduced the "
+                "device enumeration commands Driver Finder uses." % build
+            )
+        else:
+            LAST_SCAN_ERROR = (
+                "Windows returned no devices. The pnputil command may be blocked by "
+                "security software or a policy."
+            )
+        return []
+
+    devices = []
+    seen_processor = False
+
+    for dev in raw_devices:
         if not dev["description"]:
             continue
 
@@ -398,9 +596,13 @@ def scan_devices():
                 dev["is_primary"] = True
         elif cname in ["diskdrive"]:
             dev["category"] = "Storage & Drives"
+            dev["is_storage"] = True
             dev["is_primary"] = True
         elif cname in ["scsiadapter", "hdc"]:
             dev["category"] = "Storage Controllers"
+            # Replacing a boot-critical storage driver the wrong way leaves the
+            # machine unbootable, so these need an explicit opt-in.
+            dev["is_storage"] = True
             if "storage spaces" not in desc_lower:
                 dev["is_primary"] = True
         elif cname in ["processor"]:
@@ -513,7 +715,8 @@ def parse_version_tuple(v_str):
 def parse_date(d_str):
     if not d_str or d_str.lower() in ['n/a', '-']:
         return None
-    for fmt in ('%m/%d/%Y', '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%y'):
+    for fmt in ('%m/%d/%Y', '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%y',
+                '%d.%m.%Y', '%d.%m.%y', '%Y/%m/%d', '%d-%m-%Y'):
         try:
             return datetime.strptime(d_str.strip(), fmt)
         except ValueError:
@@ -638,15 +841,31 @@ def check_device_update(device):
         device["download_url"] = device.get("vendor_url") or device.get("catalog_url")
         return device
 
+    arch = get_architecture()
     best_candidate = None
     for r in results:
         prod = r["products"].lower()
-        if any(term in prod for term in ["windows 10", "windows 11", "client", "x64"]):
+        if not _arch_matches(prod, arch):
+            continue  # e.g. x64 package on an ARM64 machine would fail to install
+        if any(term in prod for term in ["windows 10", "windows 11", "client", "x64", "arm64"]):
             best_candidate = r
             break
 
     if not best_candidate and results:
-        best_candidate = results[0]
+        compatible = [r for r in results if _arch_matches(r["products"], arch)]
+        if compatible:
+            best_candidate = compatible[0]
+
+    if not best_candidate:
+        device["catalog_status"] = "Up to Date / OEM"
+        device["latest_version"] = device.get("driver_version", "N/A")
+        device["latest_date"] = device.get("driver_date", "N/A")
+        device["download_url"] = device.get("catalog_url") or device.get("vendor_url")
+        device["oem_note"] = (
+            "The catalog lists this device, but no package matches this PC's "
+            "architecture (%s)." % arch
+        )
+        return device
 
     if best_candidate:
         device["latest_version"] = best_candidate["version"]
@@ -661,6 +880,8 @@ def check_device_update(device):
 
         for rule in OEM_HWID_RULES:
             if rule["match"] not in device.get("primary_hwid", ""):
+                continue
+            if rule.get("oem") and rule["oem"] not in system_manufacturer():
                 continue
             if rule.get("only_if_version") and device.get("driver_version") != rule["only_if_version"]:
                 continue

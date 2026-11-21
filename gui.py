@@ -24,6 +24,48 @@ import paths
 import updater
 from version import APP_VERSION, APP_REVISION, APP_BUILD_INFO
 
+def enable_dpi_awareness():
+    """Without this, Windows bitmap-stretches the window above 100% scaling."""
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        return
+    except Exception:
+        pass
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+def system_dpi():
+    try:
+        import ctypes
+        dpi = ctypes.windll.user32.GetDpiForSystem()
+        if dpi and dpi >= 48:
+            return dpi
+    except Exception:
+        pass
+    try:
+        import ctypes
+        hdc = ctypes.windll.user32.GetDC(0)
+        dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX
+        ctypes.windll.user32.ReleaseDC(0, hdc)
+        if dpi and dpi >= 48:
+            return dpi
+    except Exception:
+        pass
+    return 96
+
+
+def apply_tk_scaling(root):
+    try:
+        root.tk.call("tk", "scaling", system_dpi() / 72.0)
+    except Exception:
+        pass
+
+
 class InstallationDialog(tk.Toplevel):
     """
     Dedicated dialog for downloading and installing drivers with live real-time progress bars,
@@ -585,8 +627,12 @@ class DriverFinderApp:
     def __init__(self, root):
         self.root = root
         self.root.title(f"Driver Finder {APP_BUILD_INFO} - Hardware & Manufacturer Driver Scanner")
-        self.root.geometry("1100x740")
-        self.root.minsize(980, 640)
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        width = min(1100, max(880, screen_width - 60))
+        height = min(740, max(540, screen_height - 120))
+        self.root.geometry(f"{width}x{height}")
+        self.root.minsize(min(980, width), min(600, height))
 
         self.project_dir = paths.resource_dir()
         icon_path = sys.executable if paths.is_frozen() else os.path.join(self.project_dir, "app_icon.ico")
@@ -1265,6 +1311,15 @@ class DriverFinderApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def on_scan_completed(self, devices, initial):
+        if not devices and getattr(driver_scanner, "LAST_SCAN_ERROR", ""):
+            reason = driver_scanner.LAST_SCAN_ERROR
+            self.set_status(f"Scan failed: {reason}", is_busy=False)
+            self.btn_scan.config(state=tk.NORMAL)
+            self.btn_check_all.config(state=tk.NORMAL)
+            self.btn_update_all.config(state=tk.NORMAL)
+            messagebox.showerror("Could not read devices", reason)
+            return
+
         self.all_devices = devices
         self.btn_scan.config(state=tk.NORMAL)
         self.btn_check_all.config(state=tk.NORMAL)
@@ -1275,6 +1330,7 @@ class DriverFinderApp:
             sys_str += f"  •  Service Tag: {self.system_info['service_tag']}"
         if self.system_info.get("os_version"):
             sys_str += f"  •  OS: {self.system_info['os_version']}"
+        sys_str += f"  •  Arch: {driver_scanner.get_architecture()}"
         self.pc_info_label.config(text=sys_str)
 
         if self.system_info.get("oem_url"):
@@ -1384,6 +1440,26 @@ class DriverFinderApp:
 
     def action_update_all_drivers(self):
         updates = [d for d in self.all_devices if d.get("catalog_status") == "Update Available"]
+
+        # Storage controllers are separated out: a bad or interrupted storage
+        # driver can leave Windows unable to boot, so they need a deliberate yes.
+        storage_updates = [d for d in updates if d.get("is_storage")]
+        if storage_updates:
+            updates = [d for d in updates if not d.get("is_storage")]
+            listing = "\n".join("• " + d["description"] for d in storage_updates[:8])
+            include = messagebox.askyesno(
+                "Storage driver updates - read this first",
+                f"{len(storage_updates)} available update(s) are storage controllers:\n\n"
+                f"{listing}\n\n"
+                "Replacing a storage driver can leave Windows unable to boot if the package "
+                "is wrong for this machine or the install is interrupted.\n\n"
+                "Continue only if you have a restore point or Windows install media.\n\n"
+                "Include them in this update?",
+                icon="warning"
+            )
+            if include:
+                updates = updates + storage_updates
+
         
         if not updates:
             untested = [d for d in self.all_devices if d.get("is_primary") and d.get("catalog_status") == "Ready to Check"]
@@ -1544,6 +1620,9 @@ class DriverFinderApp:
         inf_str = f"INF: {dev.get('driver_name', 'N/A')}"
 
         details_line = f"{installed_str}   |   {latest_str}\n{hwid_str}   |   {provider_str}   |   {inf_str}"
+        if dev.get("is_storage") and status == "Update Available":
+            details_line += "\n⚠️ Boot-critical device: a bad storage driver install can stop Windows from starting. This one is not included in Update All unless you confirm it."
+
         if dev.get("oem_note"):
             if status in ("Windows-Managed", "Up to Date / Windows"):
                 details_line += f"\n🛡️ Windows-managed: {dev['oem_note']}"
@@ -1838,7 +1917,9 @@ class DriverFinderApp:
             messagebox.showerror("Export Failed", f"Could not save report: {e}")
 
 def main():
+    enable_dpi_awareness()
     root = tk.Tk()
+    apply_tk_scaling(root)
     app = DriverFinderApp(root)
     root.mainloop()
 

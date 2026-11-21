@@ -16,6 +16,14 @@ The app checks GitHub for a newer release at startup and offers it in a banner w
 
 To run from source: `python main.py` (Windows, Python 3 with tkinter).
 
+## Compatibility
+
+- **Any display language.** Device enumeration uses `pnputil /format xml`, whose element names are fixed schema names. The old text output is translated on non-English Windows and parsed as zero devices.
+- **Any architecture.** The app reports the OS architecture and refuses catalog packages built for a different one, instead of offering an ARM64 laptop an x64 driver.
+- **Storage controllers are opt-in.** NVMe/SATA/RAID drivers are excluded from Update All and need an explicit confirmation, because a wrong or interrupted storage driver can leave Windows unable to boot.
+- **Clear failure instead of a blank list.** If the Windows build predates 10 1903 (no `pnputil /enum-devices`) or enumeration is blocked, the app says so.
+- **High-DPI and small screens.** The app declares DPI awareness and sizes itself to the screen instead of a fixed 1116x779.
+
 ## Versioning
 
 Every change gets a new revision number, and the jump size shows the scale:
