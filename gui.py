@@ -845,7 +845,7 @@ class DriverFinderApp:
             padx=12,
             pady=7,
             cursor="hand2",
-            command=self.trigger_check_all_primary
+            command=self.trigger_check_updates
         )
         self.btn_check_all.pack(side=tk.LEFT, padx=4)
 
@@ -1205,7 +1205,7 @@ class DriverFinderApp:
         self.set_status(f"Scan complete: {len(devices)} devices found. Ready.", is_busy=False)
 
         if initial:
-            self.trigger_check_all_primary()
+            self.trigger_check_updates()
 
     CHECK_WORKERS = 8
 
@@ -1213,22 +1213,34 @@ class DriverFinderApp:
         self.refresh_table_row(dev)
         self.set_status(f"Checked {done}/{total}: {dev['description']}...", is_busy=True)
 
-    def trigger_check_all_primary(self):
-        primary_devs = [d for d in self.all_devices if d.get("is_primary")]
-        if not primary_devs:
-            messagebox.showinfo("Driver Finder", "No primary hardware devices to check.")
+    def trigger_check_updates(self, devices=None):
+        """Check the devices in the current tab, not just those marked primary."""
+        if devices is None:
+            devices = self._filtered_devices(updates_only=False)
+
+        if not devices:
+            messagebox.showinfo(
+                "Driver Finder",
+                f"There are no devices in '{self.current_category}' to check."
+            )
             return
 
         self.btn_check_all.config(state=tk.DISABLED)
         self.btn_update_all.config(state=tk.DISABLED)
-        self.set_status(f"Checking manufacturer updates for {len(primary_devs)} key devices...", is_busy=True)
+        scope = "all devices" if self.current_category == "📋 All Devices" else f"'{self.current_category}'"
+        self.set_status(
+            f"Checking manufacturer updates for {len(devices)} device(s) in {scope}...",
+            is_busy=True
+        )
 
-        total = len(primary_devs)
+        total = len(devices)
+        self._last_check_devices = devices
+        self._last_check_scope = self.current_category
 
         def worker():
             done = 0
             with ThreadPoolExecutor(max_workers=self.CHECK_WORKERS) as pool:
-                futures = {pool.submit(driver_scanner.check_device_update, dev): dev for dev in primary_devs}
+                futures = {pool.submit(driver_scanner.check_device_update, dev): dev for dev in devices}
                 for future in as_completed(futures):
                     dev = futures[future]
                     done += 1
@@ -1247,18 +1259,26 @@ class DriverFinderApp:
         self.btn_update_all.config(state=tk.NORMAL)
         self.apply_filters()
         self.update_kpis()
-        updates_count = len([d for d in self.all_devices if d.get("catalog_status") == "Update Available"])
-        failed_count = len([d for d in self.all_devices if d.get("catalog_status") == "Check Failed"])
-        if updates_count > 0:
-            message = f"Check complete! {updates_count} newer manufacturer driver update(s) found."
+        # Report on what was actually checked, not on every device on the machine.
+        checked = getattr(self, "_last_check_devices", None) or self.all_devices
+        scope = getattr(self, "_last_check_scope", "⭐ Key Hardware")
+        scope_name = "all devices" if scope == "📋 All Devices" else scope
+
+        updates_count = sum(1 for d in checked if d.get("catalog_status") == "Update Available")
+        failed_count = sum(1 for d in checked if d.get("catalog_status") == "Check Failed")
+        windows_count = sum(1 for d in checked if d.get("catalog_status") in ("Windows-Managed", "Up to Date / Windows"))
+
+        parts = []
+        if updates_count:
+            parts.append(f"{updates_count} newer manufacturer driver update(s) found")
         else:
-            message = "Check complete! All key hardware drivers are up to date."
-        windows_count = len([d for d in self.all_devices if d.get("catalog_status") in ("Windows-Managed", "Up to Date / Windows")])
+            parts.append("everything checked is current")
         if windows_count:
-            message += f"  {windows_count} device(s) are managed by Windows (updated via Windows Update, not here)."
+            parts.append(f"{windows_count} managed by Windows (updated via Windows Update, not here)")
         if failed_count:
-            message += f"  ({failed_count} device(s) could not be checked - highlighted in red.)"
-        self.set_status(message, is_busy=False)
+            parts.append(f"{failed_count} could not be checked - highlighted in red")
+
+        self.set_status(f"Check complete for {scope_name}: " + "; ".join(parts) + ".", is_busy=False)
 
     def action_check_current_device(self):
         if not self.selected_device:
@@ -1293,7 +1313,7 @@ class DriverFinderApp:
                     "Key devices have not been checked for updates yet.\n\nWould you like to check all key devices first to find available updates?"
                 )
                 if res:
-                    self.trigger_check_all_primary()
+                    self.trigger_check_updates()
                 return
             else:
                 messagebox.showinfo("Driver Finder", "All devices are currently up to date! No updates needed.")
@@ -1337,8 +1357,17 @@ class DriverFinderApp:
         self.apply_filters()
 
     def apply_filters(self):
-        search = self.search_var.get().lower().strip()
-        updates_only = self.filter_updates_only.get()
+        self.displayed_devices = self._filtered_devices()
+        self.populate_tree()
+
+    def _filtered_devices(self, category=None, search=None, updates_only=None):
+        """Devices matching the current tab and search box."""
+        if category is None:
+            category = self.current_category
+        if search is None:
+            search = self.search_var.get().lower().strip()
+        if updates_only is None:
+            updates_only = self.filter_updates_only.get()
 
         filtered = []
         for d in self.all_devices:
@@ -1365,8 +1394,7 @@ class DriverFinderApp:
 
             filtered.append(d)
 
-        self.displayed_devices = filtered
-        self.populate_tree()
+        return filtered
 
     def _row_values(self, dev):
         """One place that renders a device row, used by both refresh paths."""

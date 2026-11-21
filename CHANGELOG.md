@@ -4,6 +4,9 @@ Driver Finder. Every change bumps the revision number; the size of the jump
 shows the scale: **small +1**, **notable +3**, **major +10**. Bump with
 `python bump_version.py --kind small|notable|major --note "..."`.
 
+## v2.10.0 · Rev 2026.11.21-R33
+- Check Updates now covers every device in the current tab, not only primary ones  _(revision +3, notable)_
+
 ## v2.9.1 · Rev 2026.11.21-R30
 - Status column fits Windows-Managed; versions no longer render as vN/A  _(revision +1, small)_
 

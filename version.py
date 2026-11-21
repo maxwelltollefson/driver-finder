@@ -14,9 +14,9 @@ That updates this file, installer/DriverFinder.iss, and CHANGELOG.md.
 `tools/check_revision.py` fails the build if app code changes without a bump.
 """
 
-APP_VERSION = "2.9.1"
+APP_VERSION = "2.10.0"
 
-APP_REVISION_NUMBER = 30
+APP_REVISION_NUMBER = 33
 APP_REVISION_DATE = "2026.11.21"
 
 APP_REVISION = f"{APP_REVISION_DATE}-R{APP_REVISION_NUMBER}"

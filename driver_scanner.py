@@ -371,6 +371,9 @@ def scan_devices():
         if drv_lower in MICROSOFT_INBOX_INFS or dev["driver_provider"].lower() == "microsoft":
             if cname not in ["display", "net", "media", "bluetooth"]:
                 dev["is_inbox"] = True
+                # Resolve the status now, so the row never looks like it is
+                # waiting to be checked.
+                dev["catalog_status"] = "Windows-Managed"
 
         if cname in ["display"]:
             dev["category"] = "Display & Graphics"
