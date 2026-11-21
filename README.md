@@ -71,6 +71,8 @@ To run from source: `python main.py` (Windows, Python 3 with tkinter).
 - `gui.py`: Modern graphical user interface with live progress bars and restart management.
 - `driver_installer.py`: Driver downloader, CAB extractor, elevated PnP installer, and Windows shutdown/restart controller.
 - `driver_scanner.py`: Native hardware scanner and Microsoft Update Catalog search engine.
+- `catalog.py`: Microsoft Update Catalog client — keep-alive HTTP plus a 24-hour on-disk query cache.
+- `paths.py`: Source/frozen path helpers (an installed copy writes to `%LOCALAPPDATA%`).
 - `create_shortcut.py`: Windows desktop shortcut generator.
 - `generate_icon.py`: Custom icon generator (`app_icon.ico`).
 - `Run_Driver_Finder.bat`: Local launcher inside the folder.

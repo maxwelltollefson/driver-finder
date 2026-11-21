@@ -85,10 +85,11 @@ def extract_cab(cab_path, extract_dir):
     Returns list of discovered .inf files.
     """
     os.makedirs(extract_dir, exist_ok=True)
-    cmd = f'expand -F:* "{cab_path}" "{extract_dir}"'
+    # Argument list, not a shell string: device names and paths can contain
+    # quotes or ampersands that a shell would reinterpret.
+    cmd = ["expand", "-F:*", cab_path, extract_dir]
     proc = subprocess.run(
         cmd,
-        shell=True,
         capture_output=True,
         text=True,
         creationflags=CREATE_NO_WINDOW,
@@ -157,10 +158,9 @@ def launch_elevated_worker(download_dir):
 
 def restart_computer(delay_seconds=10):
     """Initiates a graceful Windows restart silently in the background."""
-    cmd = f'shutdown /r /t {delay_seconds} /c "Restarting to finish installing updated drivers."'
+    cmd = ["shutdown", "/r", "/t", str(delay_seconds), "/c", "Restarting to finish installing updated drivers."]
     subprocess.Popen(
         cmd,
-        shell=True,
         creationflags=CREATE_NO_WINDOW,
         startupinfo=get_silent_startupinfo()
     )
@@ -169,8 +169,7 @@ def restart_computer(delay_seconds=10):
 def cancel_restart():
     """Aborts a pending Windows restart silently."""
     subprocess.Popen(
-        "shutdown /a",
-        shell=True,
+        ["shutdown", "/a"],
         creationflags=CREATE_NO_WINDOW,
         startupinfo=get_silent_startupinfo()
     )

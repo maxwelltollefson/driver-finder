@@ -14,6 +14,7 @@ import webbrowser
 import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import driver_scanner
@@ -239,91 +240,160 @@ class InstallationDialog(tk.Toplevel):
         self.log_text.insert(tk.END, text + "\n")
         self.log_text.see(tk.END)
 
+    DOWNLOAD_WORKERS = 3
+
     def start_pipeline(self):
+        self._build_jobs()
+        self._ticker_running = True
+        self._tick_progress()
         threading.Thread(target=self.run_download_and_extract, daemon=True).start()
 
-    def run_download_and_extract(self):
-        total = len(self.devices)
-        install_plan = {"devices": []}
-
-        self.log(f"[{datetime.now().strftime('%H:%M:%S')}] Phase 1: Downloading & extracting {total} driver package(s)...")
-
+    def _build_jobs(self):
+        """One job per device. The job index is part of the folder name so two
+        devices with similar names can never share a cab or extract folder."""
+        self._jobs = []
+        self._jobs_lock = threading.Lock()
         for idx, dev in enumerate(self.devices):
             name = dev.get("description", "Device")
-            dev_slug = "".join(c if c.isalnum() else "_" for c in name)[:32]
-            target_cab = os.path.join(self.download_base, f"{dev_slug}.cab")
-            target_extract = os.path.join(self.download_base, f"extract_{dev_slug}")
+            dev_slug = "".join(c if c.isalnum() else "_" for c in name)[:40]
+            self._jobs.append({
+                "index": idx,
+                "device": dev,
+                "name": name,
+                "slug": f"{idx:02d}_{dev_slug}",
+                "extract_dir": "",
+                "done": False,
+                "ok": False,
+                "downloaded": 0,
+                "total_bytes": 0,
+            })
 
-            # Clean any previous partial/stale download or extraction folder
-            if os.path.exists(target_extract):
-                shutil.rmtree(target_extract, ignore_errors=True)
+    def _finish_job(self, job, ok):
+        with self._jobs_lock:
+            job["done"] = True
+            job["ok"] = ok
+
+    def _post_log(self, text):
+        self.after(0, self.log, text)
+
+    def _tick_progress(self):
+        """Single UI update per tick, driven by aggregate job state."""
+        if not self._ticker_running:
+            return
+
+        total = len(self._jobs)
+        with self._jobs_lock:
+            done = sum(1 for j in self._jobs if j["done"])
+            active = [j for j in self._jobs if not j["done"]]
+            current = active[0] if active else None
+            downloaded = sum(j["downloaded"] for j in self._jobs)
+            total_bytes = sum(j["total_bytes"] for j in self._jobs)
+            item_pct = 0
+            if current and current["total_bytes"]:
+                item_pct = int(current["downloaded"] * 100 / current["total_bytes"])
+            current_name = current["name"] if current else ""
+
+        if total:
+            self.progress_item.config(mode="determinate", value=item_pct)
+            self.lbl_step.config(
+                text=f"Downloading ({min(done + 1, total)}/{total}): {current_name or 'finishing up'}"
+            )
+            self.lbl_item_details.config(
+                text=f"{downloaded / 1048576:.1f} MB / {total_bytes / 1048576:.1f} MB"
+            )
+            self.progress_overall.config(value=int(done * 50 / total))
+            self.lbl_overall.config(
+                text=f"Overall Download Progress: {done} of {total} packages ready"
+            )
+
+        self.after(150, self._tick_progress)
+
+    def _fetch_and_extract_job(self, job):
+        dev = job["device"]
+        name = job["name"]
+        target_cab = os.path.join(self.download_base, job["slug"] + ".cab")
+        target_extract = os.path.join(self.download_base, "extract_" + job["slug"])
+        job["extract_dir"] = target_extract
+
+        shutil.rmtree(target_extract, ignore_errors=True)
+        try:
             if os.path.exists(target_cab):
-                try:
-                    os.remove(target_cab)
-                except Exception:
-                    pass
+                os.remove(target_cab)
+        except Exception:
+            pass
 
-            self.after(0, lambda n=name, i=idx+1: self._set_downloading_item(n, i, total))
-            self.log(f"\n--- Downloading: {name} ---")
+        self._post_log(f"\n--- Downloading: {name} ---")
 
+        dl_url = dev.get("download_url") or ""
+        if not dl_url.startswith("http"):
+            driver_scanner.check_device_update(dev)
             dl_url = dev.get("download_url") or ""
-            if not dl_url.startswith("http"):
-                driver_scanner.check_device_update(dev)
-                dl_url = dev.get("download_url") or ""
 
-            if not dl_url or not dl_url.startswith("http"):
-                self.log(f"  ❌ No direct download URL available for {name}.")
-                continue
+        if not dl_url.startswith("http"):
+            self._post_log(f"  No direct download URL available for {name}.")
+            self._finish_job(job, False)
+            return job
 
-            def progress_hook(downloaded, total_size, pct):
-                mb_down = downloaded / (1024 * 1024)
-                mb_tot = total_size / (1024 * 1024) if total_size > 0 else 0
-                detail = f"{mb_down:.1f} MB / {mb_tot:.1f} MB ({pct}%)"
-                self.after(0, lambda: self._update_item_progress(pct, detail))
+        def progress_hook(downloaded, total_size, pct):
+            with self._jobs_lock:
+                job["downloaded"] = downloaded
+                job["total_bytes"] = total_size
 
-            try:
-                ok = driver_installer.download_driver_file(dl_url, target_cab, progress_hook)
-                if not ok:
-                    self.log("  ❌ Download failed.")
-                    continue
-                self.log(f"  ✓ Downloaded ({os.path.getsize(target_cab)/(1024*1024):.1f} MB). Extracting...")
-            except Exception as e:
-                self.log(f"  ❌ Download error: {e}")
-                continue
+        try:
+            ok = driver_installer.download_driver_file(dl_url, target_cab, progress_hook)
+            if not ok:
+                self._post_log("  Download failed.")
+                self._finish_job(job, False)
+                return job
+        except Exception as exc:
+            self._post_log(f"  Download error: {exc}")
+            self._finish_job(job, False)
+            return job
 
-            try:
-                driver_installer.extract_cab(target_cab, target_extract)
-                self.log(f"  ✓ Extracted driver package.")
+        try:
+            driver_installer.extract_cab(target_cab, target_extract)
+        except Exception as exc:
+            self._post_log(f"  Extraction error: {exc}")
+            self._finish_job(job, False)
+            return job
+
+        size_mb = os.path.getsize(target_cab) / 1048576 if os.path.exists(target_cab) else 0
+        self._post_log(f"  Downloaded {size_mb:.1f} MB and extracted: {name}")
+        self._finish_job(job, True)
+        return job
+
+    def run_download_and_extract(self):
+        total = len(self._jobs)
+        self._post_log(
+            f"[{datetime.now().strftime('%H:%M:%S')}] Phase 1: Downloading & extracting "
+            f"{total} driver package(s) ({self.DOWNLOAD_WORKERS} at a time)..."
+        )
+
+        with ThreadPoolExecutor(max_workers=self.DOWNLOAD_WORKERS) as pool:
+            futures = [pool.submit(self._fetch_and_extract_job, job) for job in self._jobs]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as exc:
+                    self._post_log(f"  Unexpected worker error: {exc}")
+
+        self._ticker_running = False
+
+        install_plan = {"devices": []}
+        for job in self._jobs:
+            if job["ok"]:
                 install_plan["devices"].append({
-                    "name": name,
-                    "extract_dir": target_extract
+                    "name": job["name"],
+                    "extract_dir": job["extract_dir"],
                 })
-            except Exception as e:
-                self.log(f"  ❌ Extraction error: {e}")
-                continue
 
-            overall_pct = int((idx + 1) * 50 / total) # Downloading is first 50%
-            self.after(0, lambda p=overall_pct, i=idx+1: self._update_overall_download(p, i, total))
+        self._post_log(f"Phase 1 complete: {len(install_plan['devices'])} of {total} package(s) ready.")
 
-        # Write installation plan
         plan_file = os.path.join(self.download_base, "install_plan.json")
         with open(plan_file, "w", encoding="utf-8") as f:
             json.dump(install_plan, f, indent=2)
 
-        # Transition to Phase 2: Elevated Installation
         self.after(0, lambda: self.start_elevated_installation(install_plan["devices"]))
-
-    def _set_downloading_item(self, name, current_idx, total):
-        self.lbl_step_phase.config(text="Phase 1 of 2: Downloading Driver Packages", fg="#2563EB")
-        self.lbl_step.config(text=f"Downloading ({current_idx}/{total}): {name}")
-
-    def _update_item_progress(self, pct, detail):
-        self.progress_item.config(mode="determinate", value=pct)
-        self.lbl_item_details.config(text=detail)
-
-    def _update_overall_download(self, pct, current_idx, total):
-        self.progress_overall.config(value=pct)
-        self.lbl_overall.config(text=f"Overall Download Progress: {current_idx} of {total} packages ready")
 
     # --- Phase 2: Live Elevated Installation ---
 
@@ -871,6 +941,7 @@ class DriverFinderApp:
         self.tree.tag_configure("update_available", foreground="#B45309", background="#FFFBEB")
         self.tree.tag_configure("up_to_date", foreground="#15803D", background="#F0FDF4")
         self.tree.tag_configure("ready", foreground="#1E293B", background="#FFFFFF")
+        self.tree.tag_configure("check_failed", foreground="#B91C1C", background="#FEF2F2")
 
         # 5. BOTTOM SELECTED DEVICE DETAIL PANEL
         self.detail_frame = tk.Frame(
@@ -1094,6 +1165,12 @@ class DriverFinderApp:
         if initial:
             self.trigger_check_all_primary()
 
+    CHECK_WORKERS = 8
+
+    def _on_one_check_done(self, dev, done, total):
+        self.refresh_table_row(dev)
+        self.set_status(f"Checked {done}/{total}: {dev['description']}...", is_busy=True)
+
     def trigger_check_all_primary(self):
         primary_devs = [d for d in self.all_devices if d.get("is_primary")]
         if not primary_devs:
@@ -1104,13 +1181,20 @@ class DriverFinderApp:
         self.btn_update_all.config(state=tk.DISABLED)
         self.set_status(f"Checking manufacturer updates for {len(primary_devs)} key devices...", is_busy=True)
 
+        total = len(primary_devs)
+
         def worker():
-            for idx, dev in enumerate(primary_devs):
-                self.root.after(0, lambda d=dev, i=idx: self.set_status(
-                    f"Checking update {i+1}/{len(primary_devs)}: {d['description']}...", is_busy=True
-                ))
-                driver_scanner.check_device_update(dev)
-                self.root.after(0, self.refresh_table_row, dev)
+            done = 0
+            with ThreadPoolExecutor(max_workers=self.CHECK_WORKERS) as pool:
+                futures = {pool.submit(driver_scanner.check_device_update, dev): dev for dev in primary_devs}
+                for future in as_completed(futures):
+                    dev = futures[future]
+                    done += 1
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        print(f"Check failed for {dev.get('description')}: {exc}")
+                    self.root.after(0, self._on_one_check_done, dev, done, total)
 
             self.root.after(0, self.on_check_all_completed)
 
@@ -1122,10 +1206,14 @@ class DriverFinderApp:
         self.apply_filters()
         self.update_kpis()
         updates_count = len([d for d in self.all_devices if d.get("catalog_status") == "Update Available"])
+        failed_count = len([d for d in self.all_devices if d.get("catalog_status") == "Check Failed"])
         if updates_count > 0:
-            self.set_status(f"Check complete! {updates_count} newer manufacturer driver update(s) found.", is_busy=False)
+            message = f"Check complete! {updates_count} newer manufacturer driver update(s) found."
         else:
-            self.set_status("Check complete! All key hardware drivers are up to date.", is_busy=False)
+            message = "Check complete! All key hardware drivers are up to date."
+        if failed_count:
+            message += f"  ({failed_count} device(s) could not be checked - highlighted in red.)"
+        self.set_status(message, is_busy=False)
 
     def action_check_current_device(self):
         if not self.selected_device:
@@ -1235,90 +1323,46 @@ class DriverFinderApp:
         self.displayed_devices = filtered
         self.populate_tree()
 
+    def _row_values(self, dev):
+        """One place that renders a device row, used by both refresh paths."""
+        status = dev.get("catalog_status", "Ready to Check")
+        if status == "Update Available":
+            status_text, tag = "⬆️ UPDATE AVAILABLE", "update_available"
+        elif status in ("Up to Date", "Up to Date / OEM"):
+            status_text, tag = "✓ Up to Date", "up_to_date"
+        elif status == "Check Failed":
+            status_text, tag = "⚠️ Check Failed", "check_failed"
+        else:
+            status_text, tag = "🔍 Ready to Check", "ready"
+
+        installed = f"v{dev['driver_version']}"
+        if dev.get("driver_date") and dev["driver_date"] != "N/A":
+            installed += f" ({dev['driver_date']})"
+
+        latest = "-"
+        if dev.get("latest_version") and dev["latest_version"] != "-":
+            latest = f"v{dev['latest_version']}"
+            if dev.get("latest_date") and dev["latest_date"] != "-":
+                latest += f" ({dev['latest_date']})"
+
+        vendor_display = dev.get("vendor", "")
+        if dev.get("driver_provider") and dev["driver_provider"] != dev.get("vendor"):
+            vendor_display += f" ({dev['driver_provider']})"
+
+        return (status_text, dev["description"], dev["category"], installed, latest, vendor_display), tag
+
     def populate_tree(self):
         self.tree.delete(*self.tree.get_children())
 
         for idx, dev in enumerate(self.displayed_devices):
-            status = dev.get("catalog_status", "Ready to Check")
-            if status == "Update Available":
-                status_text = "⬆️ UPDATE AVAILABLE"
-                tag = "update_available"
-            elif status in ["Up to Date", "Up to Date / OEM"]:
-                status_text = "✓ Up to Date"
-                tag = "up_to_date"
-            else:
-                status_text = "🔍 Ready to Check"
-                tag = "ready"
-
-            installed = f"v{dev['driver_version']}"
-            if dev.get("driver_date") and dev["driver_date"] != "N/A":
-                installed += f" ({dev['driver_date']})"
-
-            latest = "-"
-            if dev.get("latest_version") and dev["latest_version"] != "-":
-                latest = f"v{dev['latest_version']}"
-                if dev.get("latest_date") and dev["latest_date"] != "-":
-                    latest += f" ({dev['latest_date']})"
-
-            vendor_display = dev.get("vendor", "")
-            if dev.get("driver_provider") and dev["driver_provider"] != dev.get("vendor"):
-                vendor_display += f" ({dev['driver_provider']})"
-
-            self.tree.insert(
-                "",
-                tk.END,
-                iid=str(idx),
-                values=(
-                    status_text,
-                    dev["description"],
-                    dev["category"],
-                    installed,
-                    latest,
-                    vendor_display
-                ),
-                tags=(tag,)
-            )
+            values, tag = self._row_values(dev)
+            self.tree.insert("", tk.END, iid=str(idx), values=values, tags=(tag,))
 
     def refresh_table_row(self, dev):
         for idx, d in enumerate(self.displayed_devices):
             if d.get("instance_id") == dev.get("instance_id"):
-                status = dev.get("catalog_status", "Ready to Check")
-                if status == "Update Available":
-                    status_text = "⬆️ UPDATE AVAILABLE"
-                    tag = "update_available"
-                elif status in ["Up to Date", "Up to Date / OEM"]:
-                    status_text = "✓ Up to Date"
-                    tag = "up_to_date"
-                else:
-                    status_text = "🔍 Ready to Check"
-                    tag = "ready"
-
-                installed = f"v{dev['driver_version']}"
-                if dev.get("driver_date") and dev["driver_date"] != "N/A":
-                    installed += f" ({dev['driver_date']})"
-
-                latest = "-"
-                if dev.get("latest_version") and dev["latest_version"] != "-":
-                    latest = f"v{dev['latest_version']}"
-                    if dev.get("latest_date") and dev["latest_date"] != "-":
-                        latest += f" ({dev['latest_date']})"
-
-                vendor_display = dev.get("vendor", "")
-                if dev.get("driver_provider") and dev["driver_provider"] != dev.get("vendor"):
-                    vendor_display += f" ({dev['driver_provider']})"
-
-                self.tree.item(
-                    str(idx),
-                    values=(
-                        status_text,
-                        dev["description"],
-                        dev["category"],
-                        installed,
-                        latest,
-                        vendor_display
-                    ),
-                    tags=(tag,)
-                )
+                values, tag = self._row_values(dev)
+                self.tree.item(str(idx), values=values, tags=(tag,))
                 break
 
     def on_device_selected(self, event):
@@ -1408,7 +1452,7 @@ class DriverFinderApp:
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             si.wShowWindow = 0
-            subprocess.Popen(["devmgmt.msc"], shell=True, creationflags=0x08000000, startupinfo=si)
+            subprocess.Popen(["devmgmt.msc"], creationflags=0x08000000, startupinfo=si)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open Device Manager: {e}")
 
@@ -1471,7 +1515,7 @@ class DriverFinderApp:
                             f.write(f"   Download:  {d.get('download_url')}\n\n")
 
                     f.write("=" * 70 + "\n")
-                    f.write("ALL KEY HARDWARE DEVICES:\n")
+                    f.write("KEY HARDWARE DEVICES:\n")
                     f.write("=" * 70 + "\n")
                     for d in self.all_devices:
                         if d.get("is_primary"):

@@ -31,3 +31,11 @@ def downloads_dir():
         path = os.path.join(resource_dir(), "downloads")
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def cache_dir():
+    """Small on-disk cache that survives restarts (catalog query results)."""
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    path = os.path.join(base, "Driver Finder", "cache")
+    os.makedirs(path, exist_ok=True)
+    return path

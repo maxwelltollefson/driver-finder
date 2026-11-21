@@ -9,13 +9,12 @@ Filters out Microsoft inbox system stubs to prevent cross-vendor false positives
 
 import os
 import re
-import json
 import winreg
 import subprocess
+import catalog
 import urllib.request
 import urllib.parse
 from datetime import datetime
-from html import unescape
 
 CREATE_NO_WINDOW = 0x08000000
 
@@ -57,6 +56,26 @@ VENDOR_PCI_MAP = {
     "144D": "Samsung",
 }
 
+# OEM-specific overrides, matched on a hardware-ID substring.
+# Kept as data so per-OEM quirks stop scattering through the check logic.
+OEM_HWID_RULES = [
+    {
+        "match": "DEV_5916",
+        "only_if_version": "27.20.100.9664",
+        "latest_version": "27.20.100.9664",
+        "latest_date": "06/01/2021",
+        "force_up_to_date": True,
+        "note": "Dell validated driver is current (v27.20.100.9664). To install generic Intel DCH drivers, use Intel DSA.",
+    },
+    {
+        "match": "10EC&DEV_0256",
+        "download_url": "https://catalog.s.download.windowsupdate.com/d/msdownload/update/driver/drvs/2026/03/5808e972-5160-4430-a579-48b8c7322503_2df41a34eaa30bddd4430c787718b3054c198312.cab",
+        "latest_version": "6.0.9960.1",
+        "latest_date": "03/03/2026",
+        "note": "Official Dell Realtek High Definition Audio Driver (ALC3234).",
+    },
+]
+
 VENDOR_PORTALS = {
     "Intel": "https://www.intel.com/content/www/us/en/support/detect.html",
     "NVIDIA": "https://www.nvidia.com/Download/index.aspx",
@@ -69,6 +88,105 @@ VENDOR_PORTALS = {
     "Broadcom": "https://www.broadcom.com/support/download-search",
     "Samsung": "https://semiconductor.samsung.com/consumer-storage/support/tools/",
 }
+
+def _read_smbios_serial():
+    """Serial number from the raw SMBIOS table via GetSystemFirmwareTable.
+
+    Costs about 0.05 ms. Used because many OEM boards (this HP included) do
+    not publish the serial anywhere in the registry.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        rsmb = 0x52534D42  # "RSMB"
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetSystemFirmwareTable.argtypes = [wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+        kernel32.GetSystemFirmwareTable.restype = wintypes.UINT
+
+        size = kernel32.GetSystemFirmwareTable(rsmb, 0, None, 0)
+        if not size:
+            return ""
+        buf = ctypes.create_string_buffer(size)
+        if not kernel32.GetSystemFirmwareTable(rsmb, 0, buf, size):
+            return ""
+        data = buf.raw[:size]
+    except Exception:
+        return ""
+
+    offset = 8  # RSMB header: 4 bytes + DWORD table length
+    while offset + 4 <= len(data):
+        struct_type = data[offset]
+        struct_len = data[offset + 1]
+        if struct_len < 4 or offset + struct_len > len(data):
+            break
+        if struct_type == 127:  # end-of-table
+            break
+
+        if struct_type == 1 and struct_len > 7:  # System Information
+            index = data[offset + 7]  # Serial Number string index
+            if index:
+                strings = []
+                pos = offset + struct_len
+                while pos < len(data) and data[pos] != 0:
+                    end = data.find(b"\x00", pos)
+                    if end < 0:
+                        break
+                    strings.append(data[pos:end].decode("latin-1", "ignore"))
+                    pos = end + 1
+                if 1 <= index <= len(strings):
+                    return strings[index - 1].strip()
+
+        pos = offset + struct_len
+        while pos + 1 < len(data) and not (data[pos] == 0 and data[pos + 1] == 0):
+            pos += 1
+        offset = pos + 2
+
+    return ""
+
+
+def _read_serial_number():
+    """BIOS serial straight from the registry (sub-millisecond).
+
+    PowerShell costs ~300 ms to start, so it is only a fallback for machines
+    that do not publish the serial in the BIOS key.
+    """
+    try:
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\BIOS")
+        try:
+            for value_name in ("SystemSerialNumber", "BaseBoardSerialNumber"):
+                try:
+                    serial = str(winreg.QueryValueEx(key, value_name)[0]).strip()
+                except Exception:
+                    continue
+                if serial:
+                    return serial
+        finally:
+            winreg.CloseKey(key)
+    except Exception:
+        pass
+
+    serial = _read_smbios_serial()
+    if serial:
+        return serial
+
+    try:
+        cmd = 'Get-CimInstance Win32_BIOS | Select-Object -ExpandProperty SerialNumber'
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=CREATE_NO_WINDOW,
+            startupinfo=get_silent_startupinfo()
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except Exception:
+        pass
+
+    return ""
+
 
 def get_system_info():
     info = {
@@ -112,23 +230,11 @@ def get_system_info():
     except Exception:
         pass
 
-    try:
-        cmd = 'Get-CimInstance Win32_Bios | Select-Object -ExpandProperty SerialNumber'
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            creationflags=CREATE_NO_WINDOW,
-            startupinfo=get_silent_startupinfo()
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            serial = proc.stdout.strip()
-            info["serial_number"] = serial
-            if "dell" in info["manufacturer"].lower():
-                info["service_tag"] = serial
-    except Exception:
-        pass
+    serial = _read_serial_number()
+    if serial:
+        info["serial_number"] = serial
+        if "dell" in info["manufacturer"].lower():
+            info["service_tag"] = serial
 
     mfg_lower = info["manufacturer"].lower()
     if "dell" in mfg_lower:
@@ -465,55 +571,18 @@ def fetch_direct_download_link(update_id):
     return ""
 
 
-_CATALOG_CACHE = {}
-
 def check_catalog_driver(query):
-    if not query:
-        return []
-
-    if query in _CATALOG_CACHE:
-        return _CATALOG_CACHE[query]
-
-    url = f"https://www.catalog.update.microsoft.com/Search.aspx?q={urllib.parse.quote(query)}"
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-
+    """Backwards-compatible wrapper: returns [] instead of raising."""
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            html = resp.read().decode('utf-8', errors='ignore')
-
-        rows = re.findall(r'<tr id="([^"]+)"[^>]*>(.*?)</tr>', html, re.DOTALL)
-        results = []
-
-        for row_id, content in rows:
-            cells = re.findall(r'<td[^>]*>(.*?)</td>', content, re.DOTALL)
-            clean_cells = [unescape(re.sub(r'<[^>]+>', '', c).strip()) for c in cells]
-            
-            btn_match = re.search(r'<input id="([^"]+)"[^>]+value=[\'"]Download[\'"]', content)
-            update_id = btn_match.group(1) if btn_match else row_id.split('_')[0]
-
-            if len(clean_cells) >= 7:
-                title = clean_cells[1]
-                products = clean_cells[2]
-                classification = clean_cells[3]
-                date_str = clean_cells[4]
-                version_str = clean_cells[5]
-                size_str = clean_cells[6]
-
-                results.append({
-                    "update_id": update_id,
-                    "title": title,
-                    "products": products,
-                    "classification": classification,
-                    "date": date_str,
-                    "version": version_str,
-                    "size": size_str,
-                })
-
-        _CATALOG_CACHE[query] = results
-        return results
-    except Exception as e:
-        print(f"Catalog query failed for '{query}': {e}")
+        return catalog.query_catalog(query)
+    except catalog.CatalogError as exc:
+        print(f"Catalog query failed for '{query}': {exc}")
         return []
+
+
+def check_catalog_driver_strict(query):
+    """Raises catalog.CatalogError so 'offline' is not reported as 'up to date'."""
+    return catalog.query_catalog(query)
 
 
 def check_device_update(device):
@@ -531,21 +600,33 @@ def check_device_update(device):
         device["oem_note"] = "Managed directly by Windows System & Kernel stack."
         return device
 
-    # 1. Try 4-part subsystem ID first
-    query_sub = device.get("primary_hwid") or ""
-    results = check_catalog_driver(query_sub) if query_sub else []
-
-    # 2. If no subsystem-specific results, try fallback 2-part ID
-    if not results and device.get("fallback_hwid"):
-        results = check_catalog_driver(device["fallback_hwid"])
-
-    # 3. Clean device description fallback
-    if not results and device.get("description"):
+    queries = []
+    if device.get("primary_hwid"):
+        queries.append(device["primary_hwid"])
+    if device.get("fallback_hwid"):
+        queries.append(device["fallback_hwid"])
+    if device.get("description"):
         clean_desc = re.sub(r'\(R\)|\(TM\)|\[.*?\]', '', device["description"]).strip()
-        results = check_catalog_driver(clean_desc)
+        if clean_desc:
+            queries.append(clean_desc)
+
+    results = []
+    failures = 0
+    for query in queries:
+        try:
+            results = check_catalog_driver_strict(query)
+        except catalog.CatalogError:
+            failures += 1
+            continue
+        if results:
+            break
 
     if not results:
-        device["catalog_status"] = "Up to Date / OEM"
+        if queries and failures == len(queries):
+            device["catalog_status"] = "Check Failed"
+            device["oem_note"] = "Could not reach the Microsoft Update Catalog. Check the connection and try again."
+        else:
+            device["catalog_status"] = "Up to Date / OEM"
         device["latest_version"] = device.get("driver_version", "N/A")
         device["latest_date"] = device.get("driver_date", "N/A")
         device["download_url"] = device.get("vendor_url") or device.get("catalog_url")
@@ -572,26 +653,28 @@ def check_device_update(device):
             best_candidate["date"]
         )
 
-        # Special check for Dell Intel Display Adapter:
-        if "5916" in device.get("primary_hwid", "") and device.get("driver_version") == "27.20.100.9664":
-            cmp_result = "Up to Date"
-            device["latest_version"] = "27.20.100.9664"
-            device["latest_date"] = "06/01/2021"
-            device["oem_note"] = "Dell validated driver is current (v27.20.100.9664). To install generic Intel DCH drivers, use Intel DSA."
-
-        # Special check for Realtek Audio on Dell Inspiron 15-3567:
-        if "10EC&DEV_0256" in device.get("primary_hwid", ""):
-            # Force verified Dell-certified package URL
-            device["download_url"] = "https://catalog.s.download.windowsupdate.com/d/msdownload/update/driver/drvs/2026/03/5808e972-5160-4430-a579-48b8c7322503_2df41a34eaa30bddd4430c787718b3054c198312.cab"
-            device["latest_version"] = "6.0.9960.1"
-            device["latest_date"] = "03/03/2026"
-            device["oem_note"] = "Official Dell Realtek High Definition Audio Driver (ALC3234)."
+        for rule in OEM_HWID_RULES:
+            if rule["match"] not in device.get("primary_hwid", ""):
+                continue
+            if rule.get("only_if_version") and device.get("driver_version") != rule["only_if_version"]:
+                continue
+            if rule.get("download_url"):
+                device["download_url"] = rule["download_url"]
+            if rule.get("latest_version"):
+                device["latest_version"] = rule["latest_version"]
+            if rule.get("latest_date"):
+                device["latest_date"] = rule["latest_date"]
+            if rule.get("note"):
+                device["oem_note"] = rule["note"]
             cmp_result = compare_driver_versions(
                 device["driver_version"],
                 device["driver_date"],
                 device["latest_version"],
                 device["latest_date"]
             )
+            if rule.get("force_up_to_date"):
+                cmp_result = "Up to Date"
+            break
 
         device["catalog_status"] = cmp_result
 

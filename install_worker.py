@@ -53,9 +53,8 @@ def update_status(status_file, data):
         tmp_file = status_file + ".tmp"
         with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
-        if os.path.exists(status_file):
-            os.remove(status_file)
-        os.rename(tmp_file, status_file)
+        # os.replace is atomic: the GUI never sees the file half-written or missing.
+        os.replace(tmp_file, status_file)
     except Exception:
         pass
 
