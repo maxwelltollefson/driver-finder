@@ -10,6 +10,10 @@ Download [DriverFinder-Setup.exe](https://github.com/maxwelltollefson/driver-fin
 
 Driver packages are downloaded at runtime from Microsoft Update Catalog. They are not stored in this repository.
 
+### Updates
+
+The app checks GitHub for a newer release at startup and offers it in a banner with the release notes. Installing an update is one click: it downloads `DriverFinder-Setup.exe`, verifies the size and that it is a real executable, then installs and reopens itself. No admin prompt, since the installer is per-user. **Update App** in the header checks on demand.
+
 To run from source: `python main.py` (Windows, Python 3 with tkinter).
 
 ## Versioning
@@ -89,6 +93,7 @@ revision bump.
 - `driver_installer.py`: Driver downloader, CAB extractor, elevated PnP installer, and Windows shutdown/restart controller.
 - `driver_scanner.py`: Native hardware scanner and Microsoft Update Catalog search engine.
 - `catalog.py`: Microsoft Update Catalog client — keep-alive HTTP plus a 24-hour on-disk query cache.
+- `updater.py`: Self-update — checks GitHub releases, verifies and installs the new build.
 - `paths.py`: Source/frozen path helpers (an installed copy writes to `%LOCALAPPDATA%`).
 - `create_shortcut.py`: Windows desktop shortcut generator.
 - `generate_icon.py`: Custom icon generator (`app_icon.ico`).

@@ -21,6 +21,7 @@ import driver_scanner
 import driver_installer
 import create_shortcut
 import paths
+import updater
 from version import APP_VERSION, APP_REVISION, APP_BUILD_INFO
 
 class InstallationDialog(tk.Toplevel):
@@ -600,6 +601,8 @@ class DriverFinderApp:
         self.displayed_devices = []
         self.selected_device = None
         self.reboot_pending = False
+        self.update_release = None
+        self._update_check_running = False
         self.current_category = "⭐ Key Hardware"
         self.filter_updates_only = tk.BooleanVar(value=False)
         self.search_var = tk.StringVar()
@@ -620,6 +623,7 @@ class DriverFinderApp:
         self.build_ui()
 
         self.trigger_scan(initial=True)
+        self.root.after(2500, lambda: self.check_app_updates(manual=False))
 
     def setup_styles(self):
         style = ttk.Style()
@@ -757,6 +761,22 @@ class DriverFinderApp:
         )
         btn_desktop.pack(side=tk.LEFT, padx=4)
 
+        self.btn_check_app_update = tk.Button(
+            btn_box,
+            text="⬆️ Update App",
+            font=("Segoe UI", 9),
+            bg="#334155",
+            fg="#F8FAFC",
+            activebackground="#475569",
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=lambda: self.check_app_updates(manual=True)
+        )
+        self.btn_check_app_update.pack(side=tk.LEFT, padx=4)
+
         # Header Info Strip (PC details)
         self.pc_info_label = tk.Label(
             header,
@@ -794,6 +814,66 @@ class DriverFinderApp:
             command=self.trigger_restart_now
         )
         btn_banner_restart.pack(side=tk.RIGHT, padx=4)
+
+        # 1.6 APP UPDATE BANNER (packed only when a newer release exists)
+        self.update_banner = tk.Frame(self.root, bg="#E0F2FE", padx=24, pady=8, bd=1, relief=tk.SOLID)
+
+        self.lbl_update_msg = tk.Label(
+            self.update_banner,
+            text="",
+            font=("Segoe UI Semibold", 10),
+            fg="#075985",
+            bg="#E0F2FE"
+        )
+        self.lbl_update_msg.pack(side=tk.LEFT)
+
+        self.btn_update_install = tk.Button(
+            self.update_banner,
+            text="⬆️ Install Update",
+            font=("Segoe UI", 9, "bold"),
+            bg="#0284C7",
+            fg="#FFFFFF",
+            activebackground="#0369A1",
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            padx=12,
+            pady=3,
+            cursor="hand2",
+            command=self.on_click_install_update
+        )
+        self.btn_update_install.pack(side=tk.RIGHT, padx=4)
+
+        btn_update_notes = tk.Button(
+            self.update_banner,
+            text="📝 Release Notes",
+            font=("Segoe UI", 9),
+            bg="#FFFFFF",
+            fg="#075985",
+            activebackground="#F1F5F9",
+            relief=tk.SOLID,
+            bd=1,
+            padx=10,
+            pady=3,
+            cursor="hand2",
+            command=self.on_click_update_notes
+        )
+        btn_update_notes.pack(side=tk.RIGHT, padx=4)
+
+        btn_update_later = tk.Button(
+            self.update_banner,
+            text="Later",
+            font=("Segoe UI", 9),
+            bg="#FFFFFF",
+            fg="#475569",
+            activebackground="#F1F5F9",
+            relief=tk.SOLID,
+            bd=1,
+            padx=10,
+            pady=3,
+            cursor="hand2",
+            command=self.on_click_dismiss_update
+        )
+        btn_update_later.pack(side=tk.RIGHT, padx=4)
 
         # 2. STATS & ACTION CONTROLS STRIP
         action_strip = tk.Frame(self.root, bg="#FFFFFF", padx=24, pady=12, highlightthickness=1, highlightbackground="#E2E8F0")
@@ -1540,6 +1620,125 @@ class DriverFinderApp:
             webbrowser.open(url)
         else:
             messagebox.showinfo("Driver Finder", "OEM support URL not found.")
+
+    # --- Application self-update ---
+
+    def check_app_updates(self, manual=False):
+        if self._update_check_running:
+            return
+        self._update_check_running = True
+        if manual:
+            self.set_status("Checking GitHub for a newer Driver Finder release...", is_busy=True)
+
+        def worker():
+            try:
+                release = updater.fetch_latest_release()
+                error = None
+            except Exception as exc:
+                release, error = None, str(exc)
+            self.root.after(0, self._on_update_checked, release, error, manual)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_checked(self, release, error, manual):
+        self._update_check_running = False
+
+        if error:
+            if manual:
+                self.set_status(f"Update check failed: {error}", is_busy=False)
+            return
+
+        if updater.is_newer(release["version"], APP_VERSION):
+            self.update_release = release
+            self.show_update_banner(release)
+            if manual:
+                self.set_status(f"Driver Finder {release['version']} is available.", is_busy=False)
+        elif manual:
+            self.set_status(f"Driver Finder {APP_VERSION} is the newest version.", is_busy=False)
+            messagebox.showinfo(
+                "Driver Finder",
+                f"You are up to date.\n\nInstalled: v{APP_VERSION}\nLatest on GitHub: v{release['version']}"
+            )
+
+    def show_update_banner(self, release):
+        self.lbl_update_msg.config(
+            text=f"🎉 Driver Finder {release['version']} is available (you have v{APP_VERSION})."
+        )
+        self.update_banner.pack(fill=tk.X, side=tk.TOP, before=self.btn_update_all.master.master)
+
+    def on_click_dismiss_update(self):
+        self.update_banner.pack_forget()
+
+    def on_click_update_notes(self):
+        release = self.update_release or {}
+        if release.get("page"):
+            webbrowser.open(release["page"])
+
+    def on_click_install_update(self):
+        release = self.update_release
+        if not release:
+            return
+
+        if not paths.is_frozen():
+            messagebox.showinfo(
+                "Driver Finder",
+                "This copy is running from source, so it cannot update itself.\n\n"
+                "Download the installer from the release page instead."
+            )
+            self.on_click_update_notes()
+            return
+
+        notes = (release.get("notes") or "").strip()
+        preview = notes[:900] + ("..." if len(notes) > 900 else "")
+        approved = messagebox.askyesno(
+            f"Install Driver Finder {release['version']}",
+            f"Download and install Driver Finder {release['version']}?\n\n"
+            f"Installed: v{APP_VERSION}\nAvailable: v{release['version']}\n\n"
+            + (f"{preview}\n\n" if preview else "")
+            + "Driver Finder closes, installs the update, then reopens."
+        )
+        if not approved:
+            return
+
+        self.btn_update_install.config(state=tk.DISABLED)
+        self.set_status("Downloading update...", is_busy=True)
+
+        def worker():
+            try:
+                installer = updater.download_installer(release, self._on_update_progress)
+            except Exception as exc:
+                self.root.after(0, self._on_update_download_failed, str(exc))
+                return
+            self.root.after(0, self._on_update_downloaded, installer)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_progress(self, downloaded, total, percent):
+        mb = downloaded / 1048576
+        self.root.after(0, self._set_update_status, f"Downloading update... {percent}% ({mb:.1f} MB)")
+
+    def _set_update_status(self, text):
+        self.set_status(text, is_busy=True)
+
+    def _on_update_download_failed(self, message):
+        self.btn_update_install.config(state=tk.NORMAL)
+        self.set_status("Update download failed.", is_busy=False)
+        messagebox.showerror("Update failed", f"Could not download the update:\n\n{message}")
+
+    def _on_update_downloaded(self, installer_path):
+        self.set_status("Installing update...", is_busy=True)
+        try:
+            updater.launch_installer_and_relaunch(installer_path, sys.executable)
+        except Exception as exc:
+            self.btn_update_install.config(state=tk.NORMAL)
+            messagebox.showerror("Update failed", f"Could not start the installer:\n\n{exc}")
+            return
+
+        messagebox.showinfo(
+            "Updating Driver Finder",
+            "Driver Finder will close now and reopen automatically when the update finishes."
+        )
+        self.root.after(500, self.root.destroy)
 
     def open_windows_update(self):
         try:
