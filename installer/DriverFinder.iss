@@ -2,7 +2,7 @@
 ; Built by build.ps1 / GitHub Actions. Users run DriverFinder-Setup.exe.
 
 #define AppName "Driver Finder"
-#define AppVersion "2.13.0"
+#define AppVersion "2.14.0"
 #define AppPublisher "Maxwell Tollefson"
 #define AppExe "Driver Finder.exe"
 
@@ -12,7 +12,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppVerName={#AppName} {#AppVersion}
-VersionInfoVersion=2.13.0.0
+VersionInfoVersion=2.14.0.0
 VersionInfoProductName={#AppName}
 VersionInfoCompany={#AppPublisher}
 VersionInfoDescription={#AppName} Setup

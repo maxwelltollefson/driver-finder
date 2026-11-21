@@ -4,6 +4,9 @@ Driver Finder. Every change bumps the revision number; the size of the jump
 shows the scale: **small +1**, **notable +3**, **major +10**. Bump with
 `python bump_version.py --kind small|notable|major --note "..."`.
 
+## v2.14.0 · Rev 2026.11.21-R54
+- Top bars reflow instead of clipping; app opens maximized  _(revision +3, notable)_
+
 ## v2.13.0 · Rev 2026.11.21-R51
 - Fix Device Manager button: launch via shell/mmc instead of CreateProcess on a .msc  _(revision +3, notable)_
 

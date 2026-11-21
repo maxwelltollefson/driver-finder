@@ -632,7 +632,16 @@ class DriverFinderApp:
         width = min(1100, max(880, screen_width - 60))
         height = min(740, max(540, screen_height - 120))
         self.root.geometry(f"{width}x{height}")
-        self.root.minsize(min(980, width), min(600, height))
+        self.root.minsize(min(720, width), min(540, height))
+
+        # Open full screen rather than as a floating 1100-wide window.
+        try:
+            self.root.state("zoomed")
+        except Exception:
+            try:
+                self.root.attributes("-zoomed", True)
+            except Exception:
+                pass
 
         self.project_dir = paths.resource_dir()
         icon_path = sys.executable if paths.is_frozen() else os.path.join(self.project_dir, "app_icon.ico")
@@ -667,9 +676,91 @@ class DriverFinderApp:
         self.root.configure(bg=self.bg_color)
         self.setup_styles()
         self.build_ui()
+        self._bind_responsive()
+        self.root.after(80, lambda: self._apply_layout(self.root.winfo_width()))
 
         self.trigger_scan(initial=True)
         self.root.after(2500, lambda: self.check_app_updates(manual=False))
+
+    def _wrap_children(self, container, widgets, available, padx=4):
+        """Grid widgets left-to-right, starting a new row when width runs out."""
+        row = column = 0
+        used = 0
+        for widget in widgets:
+            width = widget.winfo_reqwidth() + padx * 2
+            if used and used + width > available:
+                row += 1
+                column = 0
+                used = 0
+            widget.grid(row=row, column=column, padx=padx, pady=2, sticky="w")
+            used += width
+            column += 1
+
+    def _bind_responsive(self):
+        self._layout_job = None
+        self._last_layout_width = 0
+        self.root.bind("<Configure>", self._on_root_configure)
+
+    def _on_root_configure(self, event):
+        if event.widget is not self.root:
+            return
+        width = event.width
+        if width == self._last_layout_width:
+            return
+        self._last_layout_width = width
+        if self._layout_job:
+            try:
+                self.root.after_cancel(self._layout_job)
+            except Exception:
+                pass
+        self._layout_job = self.root.after(50, lambda: self._apply_layout(width))
+
+    def _apply_layout(self, width):
+        """Reflow the three top bars so no button is ever clipped."""
+        avail = max(320, width - 90)
+
+        # 1. wrap the contents of each group to the space we actually have
+        self._wrap_children(self._header_btn_box, self._header_buttons, avail)
+        self._wrap_children(self._action_left, self._action_buttons, avail)
+        self._wrap_children(self._kpi_box, self._kpi_frames, avail)
+        self._wrap_children(self.cat_frame, self._category_list, avail, padx=3)
+
+        self.root.update_idletasks()
+
+        # 2. header: title, subtitle and buttons on one line if it fits
+        title_width = self._header_title_box.winfo_reqwidth()
+        subtitle_width = self._header_subtitle.winfo_reqwidth()
+        buttons_width = self._header_btn_box.winfo_reqwidth()
+
+        self._header_title_box.grid(row=0, column=0, sticky="w")
+
+        if avail >= title_width + subtitle_width + buttons_width + 16:
+            self._header_subtitle.grid(row=0, column=1, sticky="w", padx=(16, 0), pady=(4, 0))
+            self._header_btn_box.grid(row=0, column=3, sticky="e")
+        elif avail >= title_width + buttons_width + 16:
+            self._header_subtitle.grid_remove()
+            self._header_btn_box.grid(row=0, column=3, sticky="e")
+        else:
+            self._header_subtitle.grid_remove()
+            self._header_btn_box.grid(row=1, column=0, columnspan=4, sticky="w", pady=(10, 0))
+
+        # 3. action strip + KPI badges
+        left_width = self._action_left.winfo_reqwidth()
+        kpi_width = self._kpi_box.winfo_reqwidth()
+        self._action_left.grid(row=0, column=0, sticky="w")
+        if avail >= left_width + kpi_width + 16:
+            self._kpi_box.grid(row=0, column=2, sticky="e")
+        else:
+            self._kpi_box.grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        # 4. category tabs + search box
+        tabs_width = self.cat_frame.winfo_reqwidth()
+        search_width = self._search_frame.winfo_reqwidth()
+        self.cat_frame.grid(row=0, column=0, sticky="w")
+        if avail >= tabs_width + search_width + 16:
+            self._search_frame.grid(row=0, column=2, sticky="e")
+        else:
+            self._search_frame.grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     def setup_styles(self):
         style = ttk.Style()
@@ -711,9 +802,11 @@ class DriverFinderApp:
 
         header_top = tk.Frame(header, bg=self.header_bg)
         header_top.pack(fill=tk.X)
+        header_top.grid_columnconfigure(2, weight=1)
+        self._header_top = header_top
 
         title_box = tk.Frame(header_top, bg=self.header_bg)
-        title_box.pack(side=tk.LEFT)
+        self._header_title_box = title_box
 
         title_label = tk.Label(
             title_box,
@@ -753,11 +846,11 @@ class DriverFinderApp:
             fg="#94A3B8",
             bg=self.header_bg
         )
-        subtitle.pack(side=tk.LEFT, padx=(16, 0), pady=(4, 0))
+        self._header_subtitle = subtitle
 
         # Top Right Quick Utility Buttons
         btn_box = tk.Frame(header_top, bg=self.header_bg)
-        btn_box.pack(side=tk.RIGHT)
+        self._header_btn_box = btn_box
 
         self.btn_oem = tk.Button(
             btn_box,
@@ -822,6 +915,15 @@ class DriverFinderApp:
             command=lambda: self.check_app_updates(manual=True)
         )
         self.btn_check_app_update.pack(side=tk.LEFT, padx=4)
+
+        self._header_buttons = [
+            self.btn_oem,
+            btn_devmgmt,
+            btn_desktop,
+            self.btn_check_app_update,
+        ]
+        for button in self._header_buttons:
+            button.pack_forget()
 
         # Header Info Strip (PC details)
         self.pc_info_label = tk.Label(
@@ -926,7 +1028,8 @@ class DriverFinderApp:
         action_strip.pack(fill=tk.X, side=tk.TOP)
 
         left_actions = tk.Frame(action_strip, bg="#FFFFFF")
-        left_actions.pack(side=tk.LEFT)
+        self._action_left = left_actions
+        action_strip.grid_columnconfigure(1, weight=1)
 
         self.btn_update_all = tk.Button(
             left_actions,
@@ -991,19 +1094,29 @@ class DriverFinderApp:
         self.btn_export.pack(side=tk.LEFT, padx=4)
 
         kpi_box = tk.Frame(action_strip, bg="#FFFFFF")
-        kpi_box.pack(side=tk.RIGHT)
+        self._kpi_box = kpi_box
 
         self.kpi_total = self.create_kpi_badge(kpi_box, "Total Devices", "0", "#334155", "#F1F5F9")
         self.kpi_primary = self.create_kpi_badge(kpi_box, "Key Devices", "0", "#0284C7", "#E0F2FE")
         self.kpi_updates = self.create_kpi_badge(kpi_box, "Updates Available", "0", "#D97706", "#FEF3C7")
         self.kpi_uptodate = self.create_kpi_badge(kpi_box, "Up to Date", "0", "#16A34A", "#DCFCE7")
 
+        self._kpi_frames = [badge.master for badge in
+                            (self.kpi_total, self.kpi_primary, self.kpi_updates, self.kpi_uptodate)]
+        for frame in self._kpi_frames:
+            frame.pack_forget()
+
+        self._action_buttons = [self.btn_update_all, self.btn_scan, self.btn_check_all, self.btn_export]
+        for button in self._action_buttons:
+            button.pack_forget()
+
         # 3. CATEGORY TABS & FILTER BAR
         filter_bar = tk.Frame(self.root, bg=self.bg_color, padx=24, pady=10)
         filter_bar.pack(fill=tk.X, side=tk.TOP)
 
         self.cat_frame = tk.Frame(filter_bar, bg=self.bg_color)
-        self.cat_frame.pack(side=tk.LEFT)
+        self._filter_bar = filter_bar
+        filter_bar.grid_columnconfigure(1, weight=1)
 
         self.category_buttons = {}
         categories = [
@@ -1031,11 +1144,10 @@ class DriverFinderApp:
                 cursor="hand2",
                 command=lambda c=cat: self.select_category(c)
             )
-            btn.pack(side=tk.LEFT, padx=3)
             self.category_buttons[cat] = btn
 
         search_frame = tk.Frame(filter_bar, bg=self.bg_color)
-        search_frame.pack(side=tk.RIGHT)
+        self._search_frame = search_frame
 
         chk_updates = tk.Checkbutton(
             search_frame,
@@ -1063,6 +1175,8 @@ class DriverFinderApp:
             width=22
         )
         search_entry.pack(side=tk.LEFT, ipady=3, padx=(4, 0))
+
+        self._category_list = list(self.category_buttons.values())
 
         # 4. MAIN DEVICE TABLE (TREEVIEW)
         table_container = tk.Frame(self.root, bg="#FFFFFF", padx=24, pady=0)
