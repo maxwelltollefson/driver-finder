@@ -42,15 +42,16 @@ jobs:
           path: dist/installer/DriverFinder-Setup.exe
           if-no-files-found: error
 
+      - name: Release notes
+        shell: bash
+        run: python tools/release_notes.py > release_notes.md
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: ${{ steps.ver.outputs.label }}
-          body: |
-            Windows installer for ${{ steps.ver.outputs.build_info }}.
-
-            Download DriverFinder-Setup.exe, run it, and launch Driver Finder from the desktop shortcut. Python is not required.
+          body_path: release_notes.md
           files: dist/installer/DriverFinder-Setup.exe
           make_latest: true
           overwrite_files: true
