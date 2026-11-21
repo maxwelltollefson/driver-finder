@@ -9,6 +9,9 @@ python -m pip install "pyinstaller>=6.0"
 if (Test-Path build) { Remove-Item -Recurse -Force build }
 if (Test-Path dist) { Remove-Item -Recurse -Force dist }
 
+# Stamp the exe with the version and revision from version.py
+python tools\make_version_file.py build\version_info.txt
+
 python -m PyInstaller `
     --noconfirm `
     --clean `
@@ -16,6 +19,7 @@ python -m PyInstaller `
     --name "Driver Finder" `
     --icon "app_icon.ico" `
     --add-data "app_icon.ico;." `
+    --version-file "build\version_info.txt" `
     --hidden-import install_worker `
     --hidden-import paths `
     main.py

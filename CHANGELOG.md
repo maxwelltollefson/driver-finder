@@ -4,6 +4,9 @@ Driver Finder. Every change bumps the revision number; the size of the jump
 shows the scale: **small +1**, **notable +3**, **major +10**. Bump with
 `python bump_version.py --kind small|notable|major --note "..."`.
 
+## v2.6.0 · Rev 2026.11.21-R20
+- Exe now carries its own version and revision in file properties  _(revision +3, notable)_
+
 ## v2.5.0 · Rev 2026.11.21-R17
 - Versioning: every change bumps the revision, enforced in CI  _(revision +3, notable)_
 
