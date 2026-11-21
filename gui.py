@@ -961,16 +961,19 @@ class DriverFinderApp:
         self.tree.heading("latest", text="Latest Found (Catalog)")
         self.tree.heading("vendor", text="Manufacturer / Provider")
 
-        self.tree.column("status", width=140, minwidth=130, anchor=tk.W)
-        self.tree.column("name", width=340, minwidth=240, anchor=tk.W)
-        self.tree.column("category", width=140, minwidth=110, anchor=tk.W)
-        self.tree.column("installed", width=170, minwidth=150, anchor=tk.W)
-        self.tree.column("latest", width=170, minwidth=150, anchor=tk.W)
-        self.tree.column("vendor", width=160, minwidth=130, anchor=tk.W)
+        # Status has to fit "Windows-Managed" in full; the rest yield space to it.
+        self.tree.column("status", width=178, minwidth=170, anchor=tk.W)
+        self.tree.column("name", width=310, minwidth=200, anchor=tk.W)
+        self.tree.column("category", width=126, minwidth=100, anchor=tk.W)
+        self.tree.column("installed", width=162, minwidth=140, anchor=tk.W)
+        self.tree.column("latest", width=162, minwidth=140, anchor=tk.W)
+        self.tree.column("vendor", width=140, minwidth=110, anchor=tk.W)
 
         v_scroll = ttk.Scrollbar(table_border, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=v_scroll.set)
+        h_scroll = ttk.Scrollbar(table_border, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
         v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.tree.bind("<<TreeviewSelect>>", self.on_device_selected)
@@ -1379,13 +1382,15 @@ class DriverFinderApp:
         else:
             status_text, tag = "🔍 Ready to Check", "ready"
 
-        installed = f"v{dev['driver_version']}"
+        installed_version = str(dev.get("driver_version") or "N/A")
+        installed = installed_version.upper() if installed_version.lower() == "n/a" else f"v{installed_version}"
         if dev.get("driver_date") and dev["driver_date"] != "N/A":
             installed += f" ({dev['driver_date']})"
 
         latest = "-"
-        if dev.get("latest_version") and dev["latest_version"] != "-":
-            latest = f"v{dev['latest_version']}"
+        latest_version = str(dev.get("latest_version") or "")
+        if latest_version and latest_version != "-":
+            latest = "N/A" if latest_version.lower() == "n/a" else f"v{latest_version}"
             if dev.get("latest_date") and dev["latest_date"] != "-":
                 latest += f" ({dev['latest_date']})"
 
