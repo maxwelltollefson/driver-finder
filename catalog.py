@@ -33,7 +33,8 @@ class CatalogError(Exception):
 _cache = {}
 _cache_lock = threading.Lock()
 _cache_loaded = False
-_cache_state = {"dirty": False}
+_cache_state = {"dirty": False, "last_save": 0.0}
+SAVE_INTERVAL_SECONDS = 5.0
 _local = threading.local()
 
 
@@ -79,6 +80,7 @@ def _save_cache():
                 json.dump(payload, f)
             os.replace(tmp, path)
             _cache_state["dirty"] = False
+            _cache_state["last_save"] = now
         except Exception:
             pass
 
@@ -163,6 +165,11 @@ def query_catalog(query):
     with _cache_lock:
         _cache[query] = results
         _cache_state["dirty"] = True
+        due = time.time() - _cache_state["last_save"] >= SAVE_INTERVAL_SECONDS
+
+    # Flush as we go, not only at exit: a killed process should not lose the work.
+    if due:
+        _save_cache()
 
     return results
 
