@@ -4,6 +4,9 @@ Driver Finder. Every change bumps the revision number; the size of the jump
 shows the scale: **small +1**, **notable +3**, **major +10**. Bump with
 `python bump_version.py --kind small|notable|major --note "..."`.
 
+## v2.13.0 · Rev 2026.11.21-R51
+- Fix Device Manager button: launch via shell/mmc instead of CreateProcess on a .msc  _(revision +3, notable)_
+
 ## v2.12.0 · Rev 2026.11.21-R48
 - Compatibility overhaul: locale-proof XML scanning, architecture-aware packages, storage-driver guard, DPI and small-screen support, clear scan failures  _(revision +10, major)_
 

@@ -1834,13 +1834,32 @@ class DriverFinderApp:
             webbrowser.open("ms-settings:windowsupdate")
 
     def open_device_manager(self):
+        """Open Device Manager.
+
+        A .msc is not an executable: CreateProcess fails with error 193
+        ("%1 is not a valid Win32 application"). It has to go through shell
+        association or mmc.exe — and it must be shown, not launched hidden.
+        """
         try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 0
-            subprocess.Popen(["devmgmt.msc"], creationflags=0x08000000, startupinfo=si)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to open Device Manager: {e}")
+            os.startfile("devmgmt.msc")
+            return
+        except Exception as shell_error:
+            reason = str(shell_error)
+
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        candidate = os.path.join(system_root, "System32", "devmgmt.msc")
+        for command in (["mmc.exe", candidate], ["mmc.exe", "devmgmt.msc"]):
+            try:
+                subprocess.Popen(command)
+                return
+            except Exception as exc:
+                reason = str(exc)
+
+        messagebox.showerror(
+            "Could not open Device Manager",
+            f"Windows refused to start Device Manager.\n\n{reason}\n\n"
+            "You can open it yourself with: devmgmt.msc"
+        )
 
     def make_desktop_shortcut(self):
         success = create_shortcut.create_desktop_shortcuts(self.project_dir)
