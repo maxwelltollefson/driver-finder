@@ -28,7 +28,8 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
-CloseApplications=no
+CloseApplications=yes
+RestartApplications=no
 
 [Files]
 Source: "..\dist\Driver Finder\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
