@@ -6,7 +6,7 @@ It features a **1-Click "Update All Drivers"** engine that downloads, extracts, 
 
 ## Install
 
-Download [DriverFinder-Setup.exe](https://github.com/maxwelltollefson/driver-finder/releases/latest) and run it. No Python install is required. The setup adds a desktop shortcut.
+Download [DriverFinder-Setup.exe](https://github.com/maxwelltollefson/driver-finder/releases/latest) and run it. No Python install is required and no administrator rights are needed to install — it installs for the current user. The setup adds a desktop shortcut. Administrator approval is only requested later, when you actually install a driver update.
 
 Driver packages are downloaded at runtime from Microsoft Update Catalog. They are not stored in this repository.
 

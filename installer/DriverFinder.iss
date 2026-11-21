@@ -16,7 +16,7 @@ VersionInfoVersion=2.3.0.0
 VersionInfoProductName={#AppName}
 VersionInfoCompany={#AppPublisher}
 VersionInfoDescription={#AppName} Setup
-DefaultDirName={autopf}\Driver Finder
+DefaultDirName={localappdata}\Programs\Driver Finder
 DefaultGroupName=Driver Finder
 DisableProgramGroupPage=yes
 OutputDir=..\dist\installer
@@ -26,9 +26,8 @@ UninstallDisplayIcon={app}\{#AppExe}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=no
 
 [Files]
