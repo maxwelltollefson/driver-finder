@@ -1,6 +1,7 @@
 """
 Driver Finder - Main Entry Point
-Checks prerequisites, ensures desktop shortcut exists, and launches the GUI.
+Launches the GUI. Shortcuts are created by the installer or the in-app button,
+never automatically on launch.
 """
 
 import os
@@ -18,7 +19,7 @@ def main():
 
     base_dir = paths.resource_dir()
 
-    # 1. Ensure custom app icon exists
+    # Ensure custom app icon exists
     icon_path = os.path.join(base_dir, "app_icon.ico")
     if not os.path.exists(icon_path):
         try:
@@ -27,18 +28,7 @@ def main():
         except Exception as e:
             print(f"Warning: could not generate icon: {e}")
 
-    # 2. Ensure Desktop shortcut exists
-    try:
-        import create_shortcut
-        desktop = create_shortcut.get_desktop_path()
-        lnk = os.path.join(desktop, "Driver Finder.lnk")
-        bat = os.path.join(desktop, "Launch Driver Finder.bat")
-        if not os.path.exists(lnk) and not os.path.exists(bat):
-            create_shortcut.create_desktop_shortcuts(base_dir)
-    except Exception as e:
-        print(f"Shortcut setup note: {e}")
-
-    # 3. Launch GUI
+    # Launch GUI
     import gui
     gui.main()
 

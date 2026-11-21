@@ -47,8 +47,8 @@ To run from source: `python main.py` (Windows, Python 3 with tkinter).
 - **🌐 Manufacturer Portals**:
   - Direct 1-click link to the exact Dell support page tailored to your laptop's Service Tag.
   - Direct links to Intel Driver & Support Assistant, Realtek, NVIDIA, and AMD support.
-- **📌 Desktop Shortcuts**:
-  - Includes both **"Driver Finder.lnk"** and **"Launch Driver Finder.bat"** directly on your Windows Desktop.
+- **📌 Desktop Shortcut**:
+  - The installer places **"Driver Finder"** on your Desktop and in the Start Menu. The app can also create it on demand from the Tools menu; nothing is created behind your back on launch.
 
 ---
 
