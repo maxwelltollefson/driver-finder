@@ -980,6 +980,7 @@ class DriverFinderApp:
         self.tree.tag_configure("up_to_date", foreground="#15803D", background="#F0FDF4")
         self.tree.tag_configure("ready", foreground="#1E293B", background="#FFFFFF")
         self.tree.tag_configure("check_failed", foreground="#B91C1C", background="#FEF2F2")
+        self.tree.tag_configure("windows_managed", foreground="#475569", background="#F1F5F9")
 
         # 5. BOTTOM SELECTED DEVICE DETAIL PANEL
         self.detail_frame = tk.Frame(
@@ -1137,7 +1138,7 @@ class DriverFinderApp:
         total = len(self.all_devices)
         primary = len([d for d in self.all_devices if d.get("is_primary")])
         updates = len([d for d in self.all_devices if d.get("catalog_status") == "Update Available"])
-        uptodate = len([d for d in self.all_devices if d.get("catalog_status") in ["Up to Date", "Up to Date / OEM"]])
+        uptodate = len([d for d in self.all_devices if d.get("catalog_status") in ["Up to Date", "Up to Date / OEM", "Windows-Managed", "Up to Date / Windows"]])
 
         self.kpi_total.config(text=str(total))
         self.kpi_primary.config(text=str(primary))
@@ -1249,6 +1250,9 @@ class DriverFinderApp:
             message = f"Check complete! {updates_count} newer manufacturer driver update(s) found."
         else:
             message = "Check complete! All key hardware drivers are up to date."
+        windows_count = len([d for d in self.all_devices if d.get("catalog_status") in ("Windows-Managed", "Up to Date / Windows")])
+        if windows_count:
+            message += f"  {windows_count} device(s) are managed by Windows (updated via Windows Update, not here)."
         if failed_count:
             message += f"  ({failed_count} device(s) could not be checked - highlighted in red.)"
         self.set_status(message, is_busy=False)
@@ -1368,6 +1372,8 @@ class DriverFinderApp:
             status_text, tag = "⬆️ UPDATE AVAILABLE", "update_available"
         elif status in ("Up to Date", "Up to Date / OEM"):
             status_text, tag = "✓ Up to Date", "up_to_date"
+        elif status in ("Windows-Managed", "Up to Date / Windows"):
+            status_text, tag = "🛡️ Windows-Managed", "windows_managed"
         elif status == "Check Failed":
             status_text, tag = "⚠️ Check Failed", "check_failed"
         else:
@@ -1426,11 +1432,28 @@ class DriverFinderApp:
 
         details_line = f"{installed_str}   |   {latest_str}\n{hwid_str}   |   {provider_str}   |   {inf_str}"
         if dev.get("oem_note"):
-            details_line += f"\n💡 Note: {dev['oem_note']}"
+            if status in ("Windows-Managed", "Up to Date / Windows"):
+                details_line += f"\n🛡️ Windows-managed: {dev['oem_note']}"
+            else:
+                details_line += f"\n💡 Note: {dev['oem_note']}"
         self.lbl_sel_details.config(text=details_line)
 
-        self.btn_check_single.config(state=tk.NORMAL)
         self.btn_copy_hwid.config(state=tk.NORMAL)
+
+        windows_managed = status in ("Windows-Managed", "Up to Date / Windows")
+        if windows_managed:
+            # Nothing here is actionable in this app; point at where it IS handled.
+            self.btn_check_single.config(state=tk.DISABLED)
+            self.btn_install_single.config(state=tk.DISABLED)
+            self.btn_download.config(
+                state=tk.NORMAL,
+                text="🛡️ Open Windows Update",
+                command=self.open_windows_update,
+            )
+            return
+
+        self.btn_check_single.config(state=tk.NORMAL)
+        self.btn_download.config(command=self.action_open_download)
 
         if status == "Update Available":
             self.btn_install_single.config(state=tk.NORMAL)
@@ -1484,6 +1507,12 @@ class DriverFinderApp:
             webbrowser.open(url)
         else:
             messagebox.showinfo("Driver Finder", "OEM support URL not found.")
+
+    def open_windows_update(self):
+        try:
+            os.startfile("ms-settings:windowsupdate")
+        except Exception:
+            webbrowser.open("ms-settings:windowsupdate")
 
     def open_device_manager(self):
         try:

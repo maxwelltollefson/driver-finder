@@ -594,10 +594,13 @@ def check_device_update(device):
     """
     # Check if Windows inbox managed
     if device.get("is_inbox") or device.get("driver_name", "").lower() in MICROSOFT_INBOX_INFS:
-        device["catalog_status"] = "Up to Date / Windows"
+        device["catalog_status"] = "Windows-Managed"
         device["latest_version"] = device.get("driver_version", "N/A")
         device["latest_date"] = device.get("driver_date", "N/A")
-        device["oem_note"] = "Managed directly by Windows System & Kernel stack."
+        device["oem_note"] = (
+            "Built into Windows. This driver ships and updates with the operating system, "
+            "so Driver Finder cannot change it. Windows Update installs newer versions."
+        )
         return device
 
     queries = []
