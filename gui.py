@@ -1644,6 +1644,14 @@ class DriverFinderApp:
         self._update_check_running = False
 
         if error:
+            # Never fail silently: a broken check should be diagnosable.
+            try:
+                import datetime as _dt
+                log_path = os.path.join(paths.cache_dir(), "update.log")
+                with open(log_path, "a", encoding="utf-8") as handle:
+                    handle.write(f"{_dt.datetime.now().isoformat(timespec='seconds')} manual={manual} error={error}\n")
+            except Exception:
+                pass
             if manual:
                 self.set_status(f"Update check failed: {error}", is_busy=False)
             return
