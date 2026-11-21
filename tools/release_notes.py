@@ -1,9 +1,13 @@
 """Write release notes for a version from CHANGELOG.md.
 
 Usage:
-    python tools/release_notes.py            # notes for the version in version.py
-    python tools/release_notes.py 2.8.0      # notes for a specific version
-    python tools/release_notes.py > notes.md
+    python tools/release_notes.py                      # notes for the version in version.py
+    python tools/release_notes.py 2.8.0                # notes for a specific version
+    python tools/release_notes.py -o notes.md          # write UTF-8 file (preferred)
+    python tools/release_notes.py > notes.md           # stdout, forced UTF-8
+
+Encoding matters: a shell redirect on Windows can emit cp1252, turning "·" into a
+lone 0xB7 byte that GitHub renders as a replacement character.
 
 Exits non-zero when the version has no changelog section, so CI fails rather
 than publishing an empty release.
@@ -47,7 +51,14 @@ def section_for(version):
 
 
 def main():
-    version = sys.argv[1] if len(sys.argv) > 1 else current_version()
+    argv = sys.argv[1:]
+    output_path = None
+    if "-o" in argv:
+        index = argv.index("-o")
+        output_path = argv[index + 1]
+        del argv[index:index + 2]
+
+    version = argv[0] if argv else current_version()
     section = section_for(version)
 
     if not section:
@@ -56,11 +67,14 @@ def main():
 
     heading, body = section
     body = REVISION_MARKER.sub("", body)
-    print(f"**{heading}**")
-    print()
-    print(body)
-    print()
-    print(INSTALL_HINT)
+    notes = f"**{heading}**\n\n{body}\n\n{INSTALL_HINT}\n"
+
+    if output_path:
+        pathlib.Path(output_path).write_text(notes, encoding="utf-8", newline="\n")
+        print(f"wrote {output_path}")
+    else:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.write(notes)
     return 0
 
 

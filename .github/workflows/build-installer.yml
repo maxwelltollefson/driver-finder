@@ -44,7 +44,7 @@ jobs:
 
       - name: Release notes
         shell: bash
-        run: python tools/release_notes.py > release_notes.md
+        run: python tools/release_notes.py -o release_notes.md
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
