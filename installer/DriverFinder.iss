@@ -34,8 +34,8 @@ CloseApplications=no
 Source: "..\dist\Driver Finder\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Driver Finder"; Filename: "{app}\{#AppExe}"
-Name: "{autodesktop}\Driver Finder"; Filename: "{app}\{#AppExe}"
+Name: "{group}\Driver Finder"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\{#AppExe}"; IconIndex: 0
+Name: "{autodesktop}\Driver Finder"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\{#AppExe}"; IconIndex: 0
 Name: "{group}\Uninstall Driver Finder"; Filename: "{uninstallexe}"
 
 [Run]
