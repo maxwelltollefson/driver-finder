@@ -105,6 +105,14 @@ def rollback_driver(plan, status_file, log_file):
             log_f.write("Aborted: backup INF not found at %r\n" % backup_inf)
             return
 
+        import driver_backup
+        valid, why = driver_backup.validate_inf(backup_inf)
+        if not valid:
+            report("error", 0, "The backup package is unreadable (%s) - nothing was changed." % why)
+            log_f.write("Aborted: backup INF failed validation: %s\n" % why)
+            log_f.flush()
+            return
+
         report("installing", 10, "Removing the current driver package...")
         if inf:
             rc, out = run_pnputil(["/delete-driver", inf, "/uninstall", "/force"])

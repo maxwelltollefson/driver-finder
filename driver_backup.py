@@ -96,6 +96,45 @@ def export_all_drivers(dest_dir):
     return infs > 0, f"{infs} package(s) exported"
 
 
+def validate_inf(path):
+    """Structural check on a backup INF before anything is uninstalled.
+
+    The rollback deletes the bound package *before* re-adding the backup, so a
+    backup we cannot read would leave the device driverless. INF files are
+    UTF-16LE or ANSI, never guess the encoding from the first bytes alone.
+    """
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(262144)
+    except OSError as exc:
+        return False, "cannot read the file: %s" % exc
+    if not raw:
+        return False, "the file is empty"
+
+    text = None
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            text = raw.decode("utf-16")
+        except Exception:
+            text = None
+    if text is None:
+        for encoding in ("utf-8", "cp1252", "latin-1"):
+            try:
+                text = raw.decode(encoding)
+                break
+            except Exception:
+                continue
+    if text is None:
+        return False, "the file is not readable text"
+
+    lowered = text.lower()
+    if "[version]" not in lowered:
+        return False, "no [Version] section"
+    if "signature=" not in lowered:
+        return False, "no Signature entry"
+    return True, "ok"
+
+
 def backup_devices(devices, label="manual backup", app_version=""):
     """Export the current driver for each device that has a third-party package."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
