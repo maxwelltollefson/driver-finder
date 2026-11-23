@@ -82,63 +82,173 @@ def run_pnputil(args, timeout=300):
         return 1, str(exc)
 
 
-def rollback_driver(plan, status_file, log_file):
-    """Restore a backed-up package: remove what is bound now, re-add the backup."""
-    inf = plan.get("inf", "")
-    backup_inf = plan.get("backup_inf_path", "")
-    device = plan.get("device", "device")
+def _version_key(text):
+    """Comparable form of a driver version: 24.70.0.3 -> (24, 70, 0, 3)."""
+    parts = re.findall(r"\d+", str(text or ""))
+    return tuple(int(part) for part in parts[:4])
 
-    def report(state, percent, line):
-        update_status(status_file, {
-            "state": state, "job": "rollback_driver", "total": 3,
-            "current_device": device, "percent": percent,
-            "log_line": line, "reboot_required": False,
+
+def verify_devices(entries):
+    """Read back what Windows actually bound after the install.
+
+    pnputil's exit code says the package was added; it does not say the device
+    works. Two sources, because neither alone is enough: pnputil XML carries the
+    bound version and status (Get-PnpDevice returns DriverVersion = null on real
+    hardware), and Get-PnpDevice carries the problem code.
+    """
+    import driver_backup
+
+    ids = [entry.get("instance_id") for entry in entries if entry.get("instance_id")]
+    if not ids:
+        return []
+
+    # Instance IDs come back with different hex casing from WMI than from pnputil,
+    # so every comparison here is case-insensitive.
+    quoted = ",".join("'" + str(i).replace("'", "''") + "'" for i in ids)
+    script = (
+        "$ids = @(" + quoted + "); "
+        "Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | "
+        "Where-Object { $ids -contains $_.InstanceId } | "
+        "Select-Object InstanceId, Status, @{n='Problem';e={[int]$_.Problem}} | "
+        "ConvertTo-Json -Compress"
+    )
+    problems = {}
+    present = set()
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-Command", script],
+            capture_output=True, text=True, timeout=180,
+            creationflags=CREATE_NO_WINDOW, startupinfo=get_silent_startupinfo()
+        )
+        raw = (proc.stdout or "").strip()
+        data = json.loads(raw) if raw else []
+        if isinstance(data, dict):
+            data = [data]
+        for item in data:
+            key = str(item.get("InstanceId") or "").upper()
+            present.add(key)
+            problems[key] = int(item.get("Problem") or 0)
+    except Exception:
+        pass
+
+    results = []
+    for entry in entries:
+        instance_id = entry.get("instance_id") or ""
+        key = instance_id.upper()
+        expected = entry.get("expected_version") or ""
+        state = driver_backup.device_state(instance_id)
+        bound = state.get("version") or ""
+        status = state.get("status") or ""
+        problem = problems.get(key, 0)
+
+        if ids and key not in present:
+            verdict, detail = "failed", "The device is no longer present after the update."
+        elif problem and problem not in (24, 45):
+            verdict, detail = "failed", "Windows reports problem code %d after the update." % problem
+        elif expected and bound and _version_key(bound)[:3] != _version_key(expected)[:3]:
+            verdict = "mismatch"
+            detail = "Windows still reports %s, not the %s that was installed." % (bound, expected)
+        elif status and status.lower() not in ("started", "ok"):
+            verdict, detail = "needs_reboot", "Device state is '%s', which usually clears on restart." % status
+        else:
+            verdict, detail = "ok", "Running %s, device reports %s." % (bound or expected or "?", status or "OK")
+
+        results.append({
+            "name": entry.get("name", ""),
+            "instance_id": instance_id,
+            "expected_version": expected,
+            "actual_version": bound,
+            "status": status,
+            "problem": problem,
+            "verdict": verdict,
+            "detail": detail,
         })
+    return results
 
+
+def rollback_driver(plan, status_file, log_file):
+    """Restore backed-up packages: remove what is bound now, re-add the backup.
+
+    Accepts either one device (inf/backup_inf_path/device) or a list under
+    "devices", so reverting a whole batch costs a single UAC approval.
+    """
+    jobs = plan.get("devices") or []
+    if not jobs and (plan.get("inf") or plan.get("backup_inf_path")):
+        jobs = [{"inf": plan.get("inf", ""), "backup_inf_path": plan.get("backup_inf_path", ""),
+                 "device": plan.get("device", "device")}]
+    if not jobs:
+        update_status(status_file, {"state": "error", "percent": 0,
+                                    "log_line": "Nothing to roll back."})
+        return
+
+    import driver_backup
+
+    total = len(jobs)
+    done = 0
+    failures = []
     with open(log_file, "a", encoding="utf-8") as log_f:
         log_f.write("\n=======================================================\n")
-        log_f.write("Rollback: %s -> %s\n" % (device, os.path.basename(backup_inf)))
+        log_f.write("Rollback of %d device(s)\n" % total)
         log_f.write("=======================================================\n")
-
-        if not backup_inf or not os.path.isfile(backup_inf):
-            report("error", 0, "Backup package is missing - nothing was changed.")
-            log_f.write("Aborted: backup INF not found at %r\n" % backup_inf)
-            return
-
-        import driver_backup
-        valid, why = driver_backup.validate_inf(backup_inf)
-        if not valid:
-            report("error", 0, "The backup package is unreadable (%s) - nothing was changed." % why)
-            log_f.write("Aborted: backup INF failed validation: %s\n" % why)
-            log_f.flush()
-            return
-
-        report("installing", 10, "Removing the current driver package...")
-        if inf:
-            rc, out = run_pnputil(["/delete-driver", inf, "/uninstall", "/force"])
-            log_f.write("delete-driver %s -> %s\n%s\n" % (inf, rc, out))
-            if rc not in (0, 3010):
-                report("error", 10, "Could not remove the current package; nothing was changed.")
-                log_f.flush()
-                return
-
-        report("installing", 55, "Reinstalling the backed-up driver...")
-        rc, out = run_pnputil(["/add-driver", backup_inf, "/install"])
-        log_f.write("add-driver %s -> %s\n%s\n" % (backup_inf, rc, out))
-        ok_add = rc in (0, 259, 3010)
-
-        report("installing", 85, "Rescanning hardware...")
-        rc_scan, out_scan = run_pnputil(["/scan-devices"])
-        log_f.write("scan-devices -> %s\n%s\n" % (rc_scan, out_scan))
         log_f.flush()
 
-        if ok_add:
-            report("finished", 100,
-                   "Rolled back %s. Reboot to finish." % device)
-        else:
-            report("error", 100,
-                   "The old package was removed but the backup did not install. "
-                   "Use Device Manager to reinstall a driver for this device.")
+        for index, job in enumerate(jobs, start=1):
+            inf = job.get("inf", "")
+            backup_inf = job.get("backup_inf_path", "")
+            device = job.get("device", "device")
+            percent = int((index - 1) * 100 / max(1, total))
+            update_status(status_file, {
+                "state": "installing", "job": "rollback_driver", "total": total,
+                "current_index": index, "current_device": device, "percent": percent,
+                "log_line": "Rolling back (%d/%d): %s" % (index, total, device),
+                "reboot_required": False,
+            })
+
+            if not backup_inf or not os.path.isfile(backup_inf):
+                failures.append("%s: backup package is missing" % device)
+                log_f.write("SKIP %s: backup INF not found at %r\n" % (device, backup_inf))
+                continue
+            valid, why = driver_backup.validate_inf(backup_inf)
+            if not valid:
+                failures.append("%s: backup unreadable (%s)" % (device, why))
+                log_f.write("SKIP %s: INF failed validation (%s)\n" % (device, why))
+                continue
+
+            if inf:
+                rc, out = run_pnputil(["/delete-driver", inf, "/uninstall", "/force"])
+                log_f.write("delete-driver %s -> %s\n%s\n" % (inf, rc, out))
+                if rc not in (0, 3010):
+                    failures.append("%s: could not remove %s" % (device, inf))
+                    continue
+            rc, out = run_pnputil(["/add-driver", backup_inf, "/install"])
+            log_f.write("add-driver %s -> %s\n%s\n" % (backup_inf, rc, out))
+            if rc not in (0, 259, 3010):
+                failures.append("%s: backup did not install" % device)
+                continue
+            done += 1
+
+        run_pnputil(["/scan-devices"])
+        log_f.flush()
+
+    verification = verify_devices([{"name": job.get("device", ""),
+                                    "instance_id": job.get("instance_id", "")} for job in jobs])
+    failed_verify = [item for item in verification if item["verdict"] == "failed"]
+
+    if failures or failed_verify:
+        summary = "Rolled back %d of %d. %d still need attention." % (
+            done, total, len(failures) + len(failed_verify))
+        state = "error"
+    else:
+        summary = "Rolled back %d device(s). Reboot to finish." % done
+        state = "finished"
+
+    update_status(status_file, {
+        "state": state, "job": "rollback_driver", "total": total,
+        "current_index": total, "current_device": "Complete", "percent": 100,
+        "rolled_back": done, "failures": failures, "verification": verification,
+        "log_line": summary, "reboot_required": False,
+    })
 
 
 def update_status(status_file, data):
@@ -281,6 +391,9 @@ def main():
     if not reboot_required and installed_ok and check_system_reboot_pending():
         reboot_required = True
 
+    verification = verify_devices(devices) if total else []
+    failed_verify = [item for item in verification if item["verdict"] == "failed"]
+
     if total == 0:
         final_line = "No driver packages were queued."
     elif installed_ok == 0:
@@ -300,7 +413,11 @@ def main():
         "percent": 100,
         "installed_count": installed_ok,
         "already_current_count": already_current,
-        "log_line": final_line,
+        "verification": verification,
+        "verification_failures": len(failed_verify),
+        "log_line": final_line + (
+            " %d device(s) did not come back healthy." % len(failed_verify)
+            if failed_verify else " Every device verified."),
         "reboot_required": reboot_required
     })
 

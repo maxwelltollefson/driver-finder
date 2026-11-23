@@ -4,6 +4,37 @@ Driver Finder. Every change bumps the revision number; the size of the jump
 shows the scale: **small +1**, **notable +3**, **major +10**. Bump with
 `python bump_version.py --kind small|notable|major --note "..."`.
 
+## v3.3.0 · Rev 2026.11.23-R80
+### Post-install verification, and a way back
+- After installing, the app re-reads every device from Windows and reports what is
+  actually bound: version, device state and problem code. pnputil's exit code only means
+  the package was added - this is what says whether the device works.
+- A device that comes back with a problem code is named in the dialog, with one button to
+  roll the whole failed set back to the packages backed up minutes earlier.
+- Two data sources were needed because neither is complete: pnputil XML carries the bound
+  version and status, while `Get-PnpDevice` carries the problem code but returns
+  `DriverVersion = null` on healthy hardware.
+
+### Windows Update is no longer invisible
+- New **Windows Update** window lists the driver packages Windows Update itself is holding
+  for this PC, matched to the device they target by hardware ID - never by title.
+- They install through Windows Update, not here. The point is that the app stops
+  pretending the grey "Windows-Managed" rows are the whole story.
+- The agent search takes about ten seconds, so the result is cached for ten minutes.
+
+### Reverting a batch, and recovering a PC that will not boot
+- **Revert This Batch** in the Backups window undoes every device in one backup set behind
+  a single administrator approval.
+- Every backup set now writes `RESTORE-IN-WINRE.cmd` using relative paths, so the folder
+  can be copied to a USB stick and run from the Recovery Environment when Windows will not
+  start.
+- The offline pack gets the same script, covering every exported package.
+
+### Also
+- Eighth header button; the header still reflows and wraps when the window narrows.
+- Fixed: the Windows Update window read its device list from the Tk root instead of the
+  running app, so it matched nothing.
+
 ## v3.2.0 · Rev 2026.11.23-R70
 - Rollback refuses to uninstall anything unless the backup package validates  _(revision +3, notable)_
 

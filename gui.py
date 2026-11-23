@@ -260,6 +260,34 @@ class InstallationDialog(tk.Toplevel):
             command=self.on_click_cancel_restart
         )
 
+        # Verification panel (hidden until the worker reports back)
+        self.verify_frame = tk.Frame(self, bg="#ECFDF5", padx=20, pady=10, bd=1, relief=tk.SOLID)
+        self.lbl_verify = tk.Label(
+            self.verify_frame,
+            text="",
+            font=("Segoe UI Semibold", 9),
+            fg="#065F46",
+            bg="#ECFDF5",
+            wraplength=580,
+            justify=tk.LEFT,
+            anchor=tk.W,
+        )
+        self.lbl_verify.pack(fill=tk.X)
+        self.btn_rollback_failed = tk.Button(
+            self.verify_frame,
+            text="Roll Back The Devices That Failed",
+            font=("Segoe UI", 9, "bold"),
+            bg="#B91C1C",
+            fg="#FFFFFF",
+            activebackground="#991B1B",
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            padx=12,
+            pady=5,
+            cursor="hand2",
+            command=self.on_click_rollback_failed,
+        )
+
         # Dialog Footer
         self.footer = tk.Frame(self, bg="#F1F5F9", padx=24, pady=10)
         self.footer.pack(fill=tk.X, side=tk.BOTTOM)
@@ -295,6 +323,7 @@ class InstallationDialog(tk.Toplevel):
         """One job per device. The job index is part of the folder name so two
         devices with similar names can never share a cab or extract folder."""
         self._jobs = []
+        self._backup_manifest = None
         self._jobs_lock = threading.Lock()
         for idx, dev in enumerate(self.devices):
             name = dev.get("description", "Device")
@@ -425,14 +454,19 @@ class InstallationDialog(tk.Toplevel):
         install_plan = {"devices": [], "restore_point": True}
         for job in self._jobs:
             if job["ok"]:
+                device = job.get("device") or {}
+                expected = device.get("latest_version") or ""
                 install_plan["devices"].append({
                     "name": job["name"],
                     "extract_dir": job["extract_dir"],
+                    "instance_id": device.get("instance_id", ""),
+                    "expected_version": "" if expected in ("-", "n/a", "N/A") else expected,
                 })
 
         self._post_log(f"Phase 1 complete: {len(install_plan['devices'])} of {total} package(s) ready.")
 
-        self._backup_before_install([job["device"] for job in self._jobs if job["ok"]])
+        backup_result = self._backup_before_install([job["device"] for job in self._jobs if job["ok"]])
+        self._backup_manifest = backup_result.get("manifest")
 
         plan_file = os.path.join(self.download_base, "install_plan.json")
         with open(plan_file, "w", encoding="utf-8") as f:
@@ -583,6 +617,7 @@ class InstallationDialog(tk.Toplevel):
                     self.lbl_overall.config(text=f"Overall Progress: Installing {current_idx} of {total} ({overall_value}%)")
                 elif state == "finished":
                     self.progress_item.stop()
+                    self.show_verification(data.get("verification") or [])
                     self.progress_item.config(mode="determinate", value=100)
                     self.progress_overall.config(value=100)
                     self.lbl_step.config(text="✅ All driver packages installed successfully!")
@@ -600,6 +635,71 @@ class InstallationDialog(tk.Toplevel):
 
         # Continue polling every 250ms
         self.after(250, lambda: self.poll_worker_status(total))
+
+    def show_verification(self, results):
+        """Report what Windows actually bound, not what pnputil exited with."""
+        if not results:
+            return
+        failed = [r for r in results if r["verdict"] == "failed"]
+        mismatch = [r for r in results if r["verdict"] == "mismatch"]
+        reboot = [r for r in results if r["verdict"] == "needs_reboot"]
+        healthy = [r for r in results if r["verdict"] == "ok"]
+
+        self._failed_verification = failed
+        lines = []
+        for item in results:
+            mark = {"ok": "\u2705", "needs_reboot": "\u23f3",
+                    "mismatch": "\u26a0\ufe0f", "failed": "\u274c"}.get(item["verdict"], "\u2022")
+            lines.append("%s %s \u2014 %s" % (mark, item["name"][:44], item["detail"]))
+            self.log("  " + lines[-1])
+
+        if failed:
+            self.lbl_verify.config(
+                text="Installation finished, but %d device(s) did not come back healthy:\n%s\n\n"
+                     "The drivers replaced in this run were backed up first, so they can be "
+                     "restored now." % (len(failed), "\n".join(l for l in lines if l.startswith("\u274c"))),
+                fg="#991B1B")
+            self.verify_frame.config(bg="#FEF2F2")
+            self.lbl_verify.config(bg="#FEF2F2")
+            self.btn_rollback_failed.pack(anchor=tk.W, pady=(8, 0))
+        else:
+            summary = "%d device(s) verified: %d healthy" % (len(results), len(healthy))
+            if reboot:
+                summary += ", %d waiting on a restart" % len(reboot)
+            if mismatch:
+                summary += ", %d still reporting the older version" % len(mismatch)
+            self.lbl_verify.config(text=summary + ".", fg="#065F46")
+            self.btn_rollback_failed.pack_forget()
+        self.verify_frame.pack(fill=tk.X, padx=24, pady=(0, 10))
+
+    def on_click_rollback_failed(self):
+        """Undo this batch for the devices that failed, using the backups just taken."""
+        failed = getattr(self, "_failed_verification", [])
+        manifest = getattr(self, "_backup_manifest", None)
+        if not failed or not manifest:
+            messagebox.showerror(
+                "Cannot roll back",
+                "No backup from this run is available for the failed device(s).\n"
+                "Open Backups to see what is stored on disk.", parent=self)
+            return
+        ids = {item["instance_id"] for item in failed if item.get("instance_id")}
+        jobs = driver_backup.rollback_plan_for(manifest, instance_ids=ids)
+        if not jobs:
+            messagebox.showerror(
+                "Cannot roll back",
+                "This run did not back up a package for that device - it was probably on a "
+                "Windows-owned driver, which cannot be rolled back from here.", parent=self)
+            return
+        if not messagebox.askyesno(
+                "Roll back %d device(s)?" % len(jobs),
+                "Restores:\n\n" + "\n".join("\u2022 " + job["device"][:56] for job in jobs) +
+                "\n\nNeeds administrator approval, and usually a reboot.", parent=self):
+            return
+        base = paths.downloads_dir()
+        plan = {"job": "rollback_driver", "devices": jobs}
+        with open(os.path.join(base, "install_plan.json"), "w", encoding="utf-8") as handle:
+            json.dump(plan, handle, indent=2)
+        tool_windows.RollbackProgress(self, base, "%d device(s)" % len(jobs))
 
     def on_pipeline_completed(self):
         self.progress_item.stop()
@@ -887,6 +987,21 @@ class DriverFinderApp:
         btn_box = tk.Frame(header_top, bg=self.header_bg)
         self._header_btn_box = btn_box
 
+        self.btn_wu = tk.Button(
+            btn_box,
+            text="🪟 Windows Update",
+            font=("Segoe UI", 9),
+            bg="#334155",
+            fg="#F8FAFC",
+            activebackground="#475569",
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=self.open_windows_update_window
+        )
+
         self.btn_health = tk.Button(
             btn_box,
             text="🩺 Device Health",
@@ -997,6 +1112,7 @@ class DriverFinderApp:
         self.btn_check_app_update.pack(side=tk.LEFT, padx=4)
 
         self._header_buttons = [
+            self.btn_wu,
             self.btn_health,
             self.btn_apps,
             self.btn_backups,
@@ -2055,11 +2171,14 @@ class DriverFinderApp:
         except Exception:
             pass
         try:
-            window = cls(self.root, self._tool_palette())
+            window = cls(self.root, self._tool_palette(), app=self)
         except Exception as exc:
             messagebox.showerror("Could not open window", str(exc))
             return
         setattr(self, attr, window)
+
+    def open_windows_update_window(self):
+        self._open_tool_window(tool_windows.WindowsUpdateWindow, "_win_wu")
 
     def open_device_health(self):
         self._open_tool_window(tool_windows.DeviceHealthWindow, "_win_health")

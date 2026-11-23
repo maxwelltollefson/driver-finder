@@ -135,6 +135,117 @@ def validate_inf(path):
     return True, "ok"
 
 
+RESTORE_SCRIPT = "RESTORE-IN-WINRE.cmd"
+
+
+def _batch_safe(text, limit=58):
+    """Keep a description printable inside a .cmd file."""
+    cleaned = str(text or "").replace("&", "and").replace("%", "pct")
+    cleaned = cleaned.replace("<", "").replace(">", "").replace("|", " ").replace('"', "")
+    return cleaned[:limit]
+
+
+def write_restore_script(base_dir, entries, title="Restore these drivers"):
+    """A .cmd that re-adds these packages, for a Windows that will not boot.
+
+    Paths are relative (%~dp0) so the whole backup folder can be copied to a USB
+    stick and run from the Windows Recovery Environment.
+    """
+    if not base_dir or not os.path.isdir(base_dir):
+        return ""
+    lines = [
+        "@echo off",
+        "REM " + _batch_safe(title, 100),
+        "REM Run as administrator.",
+        "REM If Windows will not start: Troubleshoot > Advanced options > Command Prompt,",
+        "REM then run this file from the USB stick or drive it sits on.",
+        "setlocal",
+        "",
+    ]
+    added = 0
+    for entry in entries:
+        if not entry.get("ok"):
+            continue
+        folder = entry.get("folder", "")
+        if not folder or not os.path.isdir(os.path.join(base_dir, folder)):
+            continue
+        lines.append("echo Restoring " + _batch_safe(entry.get("description")))
+        lines.append('pnputil /add-driver "%~dp0' + folder + '\\*.inf" /subdirs /install')
+        added += 1
+    if not added:
+        return ""
+    lines += ["", "echo.", "echo Finished. Restart the computer.", "pause"]
+    path = os.path.join(base_dir, RESTORE_SCRIPT)
+    try:
+        with open(path, "w", encoding="cp1252", errors="replace", newline="\r\n") as handle:
+            handle.write("\n".join(lines))
+        return path
+    except Exception:
+        return ""
+
+
+def rollback_plan_for(manifest, instance_ids=None):
+    """Worker jobs that undo a whole backup set in a single elevation."""
+    jobs = []
+    for entry in (manifest or {}).get("entries", []):
+        if not entry.get("ok"):
+            continue
+        if instance_ids is not None and entry.get("instance_id") not in instance_ids:
+            continue
+        backup_inf = backup_inf_path(manifest, entry)
+        if not backup_inf:
+            continue
+        jobs.append({
+            "inf": current_inf(entry.get("instance_id", "")) or entry.get("inf", ""),
+            "backup_inf_path": backup_inf,
+            "instance_id": entry.get("instance_id", ""),
+            "device": entry.get("description", ""),
+        })
+    return jobs
+
+
+def device_state(instance_id):
+    """INF, version and status currently bound to a device.
+
+    pnputil XML is the reliable source: Get-PnpDevice returns DriverVersion = null
+    for perfectly healthy devices (seen on an Intel Wi-Fi 7 BE200 here).
+    """
+    empty = {"inf": "", "version": "", "date": "", "status": ""}
+    if not instance_id:
+        return empty
+    temp = os.path.join(paths.cache_dir(), "one_device.xml")
+    try:
+        if os.path.exists(temp):
+            os.remove(temp)
+        rc, _ = _run(["pnputil", "/enum-devices", "/instanceid", instance_id,
+                      "/drivers", "/format", "xml", "/output-file", temp], timeout=60)
+        if rc != 0 or not os.path.exists(temp):
+            return empty
+        with open(temp, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+
+        def grab(tag):
+            match = re.search("<%s>([^<]*)</%s>" % (tag, tag), text)
+            return match.group(1).strip() if match else ""
+
+        raw_version = grab("DriverVersion")
+        date = ""
+        version = raw_version
+        match = re.search(r"^(\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4})\s+(.*)$", raw_version)
+        if match:
+            date, version = match.group(1), match.group(2)
+        return {"inf": grab("DriverName"), "version": version.strip(),
+                "date": date, "status": grab("Status")}
+    except Exception:
+        return empty
+    finally:
+        try:
+            if os.path.exists(temp):
+                os.remove(temp)
+        except Exception:
+            pass
+
+
 def backup_devices(devices, label="manual backup", app_version=""):
     """Export the current driver for each device that has a third-party package."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -184,6 +295,9 @@ def backup_devices(devices, label="manual backup", app_version=""):
         return manifest
 
     manifest["base"] = base
+    script = write_restore_script(base, entries, title="Restore drivers replaced by Driver Finder")
+    if script:
+        manifest["restore_script"] = os.path.basename(script)
     return manifest
 
 
@@ -216,6 +330,22 @@ def export_offline_pack(zip_path, progress=None):
                 "       pnputil /add-driver *.inf /subdirs /install\n\n"
                 "Then run the Driver Finder installer and let it check the catalog.\n"
             )
+    except Exception:
+        pass
+
+    try:
+        with open(os.path.join(staging, "RESTORE-ALL-IN-WINRE.cmd"), "w",
+                  encoding="cp1252", errors="replace", newline="\r\n") as handle:
+            handle.write("\r\n".join([
+                "@echo off",
+                "REM Re-adds every driver package in this folder.",
+                "REM Run as administrator, or from Troubleshoot > Advanced options >",
+                "REM Command Prompt in the Windows Recovery Environment.",
+                'pnputil /add-driver "%~dp0*.inf" /subdirs /install',
+                "echo.",
+                "echo Finished. Restart the computer.",
+                "pause",
+            ]))
     except Exception:
         pass
 

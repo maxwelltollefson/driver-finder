@@ -27,6 +27,12 @@ To run from source: `python main.py` (Windows, Python 3 with tkinter).
 - **App updates.** Installed programs with a newer winget version, updated one at a time
   on your click.
 - **System Restore checkpoint** requested before each batch install, best effort.
+- **Post-install verification.** After installing, each device is re-read from Windows and
+  reported as healthy, waiting on a reboot, still on the old version, or failed - and a
+  failed device can be rolled back to the package backed up minutes earlier.
+- **Windows Update drivers**, listed and matched to the devices they target.
+- **Recovery scripts** written into every backup set and the offline pack, so a PC that
+  will not boot can be recovered from a USB stick.
 
 ## Compatibility
 

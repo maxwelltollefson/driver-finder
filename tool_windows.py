@@ -15,6 +15,7 @@ import device_health
 import driver_backup
 import driver_installer
 import paths
+import windows_update
 
 FONT = "Segoe UI"
 FONT_BOLD = "Segoe UI Semibold"
@@ -25,10 +26,12 @@ class ToolWindow(tk.Toplevel):
     SUBTITLE = ""
     GEOMETRY = "1000x700"
 
-    def __init__(self, parent, palette):
+    def __init__(self, parent, palette, app=None):
         super().__init__(parent)
         self.palette = palette
         self.parent = parent
+        # The app object holds the scanned device list; Tk's root does not.
+        self.app = app
         self.title(self.TITLE + " - Driver Finder")
         self.geometry(self.GEOMETRY)
         self.minsize(780, 520)
@@ -325,6 +328,87 @@ class AppUpdatesWindow(ToolWindow):
         self.refresh()
 
 
+class WindowsUpdateWindow(ToolWindow):
+    TITLE = "Windows Update Drivers"
+    SUBTITLE = ("Driver packages Windows Update itself is holding for this PC. This app cannot "
+                "install them - Windows owns them - but you should not have to guess what they are.")
+    GEOMETRY = "1040x640"
+
+    def build(self):
+        top = tk.Frame(self.body, bg=self.palette["bg"])
+        top.pack(fill=tk.X, pady=(0, 8))
+        self.btn_refresh = self.button(top, "Refresh", self.refresh, "primary")
+        self.btn_refresh.pack(side=tk.LEFT)
+        self.button(top, "Open Windows Update", self.open_windows_update, "ghost").pack(side=tk.LEFT, padx=8)
+        self.lbl_summary = tk.Label(top, text="Asking Windows Update...", font=(FONT, 9),
+                                    bg=self.palette["bg"], fg=self.palette["muted"])
+        self.lbl_summary.pack(side=tk.LEFT, padx=12)
+
+        frame, self.tree = self.make_tree(
+            self.body, ("Device on this PC", "Package", "Version", "Date", "Size"),
+            (250, 380, 110, 100, 80), height=10)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        note = tk.Frame(self.body, bg=self.palette["card"], highlightthickness=1,
+                        highlightbackground=self.palette["border"])
+        note.pack(fill=tk.X, pady=(10, 0))
+        tk.Label(note, text="Why this list exists", font=(FONT_BOLD, 9), bg=self.palette["card"],
+                 fg=self.palette["text"]).pack(anchor="w", padx=12, pady=(8, 0))
+        tk.Label(note, text=(
+            "A device whose driver is owned by Windows shows as Windows-Managed in the main "
+            "window. Windows Update may still be holding a package for it. These install "
+            "through Windows Update, not here - run Windows Update to apply them."),
+            font=(FONT, 9), bg=self.palette["card"], fg=self.palette["muted"],
+            justify="left", anchor="w", wraplength=980).pack(fill=tk.X, padx=12, pady=(2, 10))
+
+        self.refresh()
+
+    def refresh(self):
+        self.btn_refresh.config(state=tk.DISABLED)
+        self.lbl_summary.config(text="Searching Windows Update (this takes about 10 seconds)...",
+                                fg=self.palette["muted"])
+        threading.Thread(target=self._load, daemon=True).start()
+
+    def _load(self):
+        result = windows_update.list_driver_offers()
+        devices = getattr(self.app, "all_devices", None) or []
+        offers = windows_update.match_to_devices(result.get("offers", []), devices)
+        self.after(0, lambda: self._render(result, offers))
+
+    def _render(self, result, offers):
+        self.btn_refresh.config(state=tk.NORMAL)
+        self.tree.delete(*self.tree.get_children())
+        for offer in offers:
+            self.tree.insert("", tk.END, values=(
+                offer.get("device") or "(no match on this PC)",
+                offer["title"][:80],
+                offer["version"] or "-",
+                offer.get("date") or "-",
+                ("%.1f MB" % offer["size_mb"]) if offer.get("size_mb") else "-"))
+
+        if result.get("error"):
+            self.lbl_summary.config(text="Windows Update did not answer: " + result["error"][:70],
+                                    fg="#B91C1C")
+        elif not offers:
+            self.lbl_summary.config(
+                text="Windows Update is not holding any driver package for this PC.",
+                fg=self.palette["green"])
+        else:
+            matched = len([o for o in offers if o.get("device")])
+            self.lbl_summary.config(
+                text="%d package(s) pending, %d matched to a device here." % (len(offers), matched),
+                fg=self.palette["amber"])
+
+    def open_windows_update(self):
+        try:
+            os.startfile("ms-settings:windowsupdate")
+        except Exception:
+            try:
+                os.startfile("windowsupdate")
+            except Exception as exc:
+                messagebox.showerror("Could not open Windows Update", str(exc), parent=self)
+
+
 class BackupsWindow(ToolWindow):
     TITLE = "Driver Backups & Rollback"
     SUBTITLE = ("Every install made from this app backs up the driver it replaces first. "
@@ -343,7 +427,10 @@ class BackupsWindow(ToolWindow):
         self.btn_rollback = self.button(top, "Roll Back Selected", self.rollback, "danger",
                                         state=tk.DISABLED)
         self.btn_rollback.pack(side=tk.LEFT, padx=8)
-        self.button(top, "Open Folder", self.open_folder, "ghost").pack(side=tk.LEFT)
+        self.btn_revert = self.button(top, "Revert This Batch", self.revert_batch, "ghost",
+                                      state=tk.DISABLED)
+        self.btn_revert.pack(side=tk.LEFT)
+        self.button(top, "Open Folder", self.open_folder, "ghost").pack(side=tk.LEFT, padx=8)
 
         self.lbl_summary = tk.Label(self.body, text="Loading backups...", font=(FONT, 9),
                                     bg=self.palette["bg"], fg=self.palette["muted"])
@@ -357,6 +444,14 @@ class BackupsWindow(ToolWindow):
 
         log_frame, self.log = self.log_box(self.body, height=7)
         log_frame.pack(fill=tk.BOTH, expand=False, pady=(10, 0))
+
+        self.button(self.footer_inner, "Write Recovery Script", self.write_recovery_script,
+                    "ghost").pack(side=tk.RIGHT)
+        tk.Label(self.footer_inner,
+                 text="Keep that script on a USB stick - it restores these drivers even if "
+                      "Windows will not boot.",
+                 font=(FONT, 8), bg=self.palette["card"], fg=self.palette["muted"]).pack(
+                     side=tk.LEFT, padx=6)
 
         self.entries = {}
         self.manifests = []
@@ -413,6 +508,12 @@ class BackupsWindow(ToolWindow):
         manifest, entry = self._selected_entry()
         usable = bool(entry and entry.get("ok") and driver_backup.backup_inf_path(manifest, entry))
         self.btn_rollback.config(state=tk.NORMAL if usable else tk.DISABLED)
+        batch_size = len([e for e in (manifest or {}).get("entries", []) if e.get("ok")])
+        self.btn_revert.config(state=tk.NORMAL if batch_size else tk.DISABLED)
+        if batch_size > 1:
+            self.btn_revert.config(text="Revert Batch (%d)" % batch_size)
+        else:
+            self.btn_revert.config(text="Revert This Batch")
 
     def open_folder(self):
         try:
@@ -465,6 +566,58 @@ class BackupsWindow(ToolWindow):
                 "Saved to:\n%s\n\nOn a fresh Windows install, right-click each .inf and choose "
                 "Install, or run:\npnputil /add-driver *.inf /subdirs /install" % path, parent=self))
 
+    def revert_batch(self):
+        """Undo an entire backup set in one elevation."""
+        manifest, entry = self._selected_entry()
+        if not manifest:
+            return
+        entries = [e for e in manifest.get("entries", []) if e.get("ok")]
+        if not entries:
+            return
+        if not messagebox.askyesno(
+                "Revert this whole batch?",
+                "Puts back the driver from %s for all %d device(s):\n\n%s\n\n"
+                "Each device's current package is removed first. Needs administrator approval "
+                "and usually a reboot."
+                % (manifest.get("created", ""), len(entries),
+                   "\n".join("\u2022 " + e.get("description", "")[:56] for e in entries[:10])),
+                parent=self):
+            return
+
+        jobs = driver_backup.rollback_plan_for(manifest)
+        if not jobs:
+            messagebox.showerror("Cannot revert",
+                                 "The backed-up files for this set are missing from disk.",
+                                 parent=self)
+            return
+        plan = {"job": "rollback_driver", "devices": jobs}
+        base = paths.downloads_dir()
+        import json
+        stale = os.path.join(base, "install_status.json")
+        if os.path.exists(stale):
+            os.remove(stale)
+        with open(os.path.join(base, "install_plan.json"), "w", encoding="utf-8") as handle:
+            json.dump(plan, handle, indent=2)
+        RollbackProgress(self, base, "%d devices" % len(jobs), on_done=self.refresh)
+
+    def write_recovery_script(self):
+        manifest, _entry = self._selected_entry()
+        if not manifest:
+            return
+        path = driver_backup.write_restore_script(
+            manifest.get("base", ""), manifest.get("entries", []),
+            title="Restore drivers replaced by Driver Finder")
+        if path:
+            self.log_to(self.log, "Recovery script written: " + path)
+            messagebox.showinfo(
+                "Recovery script written",
+                "Saved to:\n%s\n\nRun it as administrator to put these drivers back, "
+                "including from the Windows Recovery Environment if Windows will not boot.\n\n"
+                "Tip: keep a copy on a USB stick." % path, parent=self)
+        else:
+            messagebox.showerror("Could not write the script",
+                                 "The backup files for this set are missing from disk.", parent=self)
+
     def rollback(self):
         manifest, entry = self._selected_entry()
         if not entry:
@@ -512,11 +665,19 @@ class BackupsWindow(ToolWindow):
         RollbackProgress(self, base, entry.get("description", "Device"), on_done=self.refresh)
 
 
+DEFAULT_PALETTE = {
+    "bg": "#F8FAFC", "header": "#0F172A", "card": "#FFFFFF", "border": "#E2E8F0",
+    "text": "#0F172A", "muted": "#475569", "blue": "#2563EB", "green": "#059669",
+    "amber": "#D97706",
+}
+
+
 class RollbackProgress(tk.Toplevel):
     """Small progress window for the elevated rollback worker."""
 
     def __init__(self, parent, base_dir, device, on_done=None):
         super().__init__(parent)
+        self.palette = getattr(parent, "palette", None) or DEFAULT_PALETTE
         self.base = base_dir
         self.on_done = on_done
         self.finished = False
