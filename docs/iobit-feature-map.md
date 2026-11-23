@@ -97,6 +97,8 @@ boot slow") with numbers, because Windows already records them.
 
 ---
 
+> **Status:** Tier 1 and item 5 shipped in **v3.0.0**.
+
 ## 4. Recommended sequence
 
 **v3.0 — "it can undo itself"** (Tier 1: items 1-4)

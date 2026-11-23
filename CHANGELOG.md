@@ -4,6 +4,9 @@ Driver Finder. Every change bumps the revision number; the size of the jump
 shows the scale: **small +1**, **notable +3**, **major +10**. Bump with
 `python bump_version.py --kind small|notable|major --note "..."`.
 
+## v3.1.0 · Rev 2026.11.23-R67
+- Elevation prompt waits 3 minutes instead of 30 seconds; rollback progress keeps polling  _(revision +3, notable)_
+
 ## v3.0.0 · Rev 2026.11.23-R64
 Driver Finder can now undo what it does, explain why a device is broken, and update
 your applications as well as your drivers.

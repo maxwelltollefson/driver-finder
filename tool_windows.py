@@ -538,11 +538,12 @@ class RollbackProgress(tk.Toplevel):
                                    font=(FONT_BOLD, 9), relief="flat", bg="#F1F5F9", padx=14, pady=6)
         self.btn_close.pack(anchor="e", padx=16, pady=(4, 12))
 
-        if not driver_installer.launch_elevated_worker(base_dir):
-            self.lbl.config(text="Could not start the elevated worker. Approve the UAC prompt "
-                                 "and try again.", fg="#B91C1C")
-            self.btn_close.config(state=tk.NORMAL)
-            return
+        # Poll regardless of the launch result: Start-Process reports the UAC
+        # decision, but the worker writes the status file either way.
+        self.launch_ok = driver_installer.launch_elevated_worker(base_dir)
+        if not self.launch_ok:
+            self.lbl.config(text="Waiting for administrator approval... If no prompt appeared, "
+                                 "close this window and try again.")
         self.after(600, self.poll)
 
     def poll(self):
@@ -556,6 +557,7 @@ class RollbackProgress(tk.Toplevel):
                 status = {}
             state = status.get("state", "")
             self.bar.config(value=status.get("percent", 0))
+            self._saw_status = True
             line = status.get("log_line") or status.get("current_device") or ""
             self.lbl.config(text=line,
                             fg="#059669" if state == "finished" else

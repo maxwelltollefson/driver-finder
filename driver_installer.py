@@ -159,11 +159,14 @@ def launch_elevated_worker(download_dir):
         f"-ArgumentList {args_ps} -Verb RunAs -WindowStyle Hidden"
     )
     try:
+        # The user has to answer a UAC prompt: 30s was short enough that a slow
+        # answer made the app report "could not elevate" while the prompt was
+        # still on screen. Give them three minutes.
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-NonInteractive", "-Command", ps_cmd],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=180,
             creationflags=CREATE_NO_WINDOW,
             startupinfo=get_silent_startupinfo()
         )
