@@ -4,6 +4,43 @@ Driver Finder. Every change bumps the revision number; the size of the jump
 shows the scale: **small +1**, **notable +3**, **major +10**. Bump with
 `python bump_version.py --kind small|notable|major --note "..."`.
 
+## v3.0.0 · Rev 2026.11.23-R64
+Driver Finder can now undo what it does, explain why a device is broken, and update
+your applications as well as your drivers.
+
+### Driver backups and rollback
+- Every install backs up the driver package it is about to replace, first. The export
+  uses `pnputil /export-driver`, which needs no administrator approval, so the safety net
+  costs no extra UAC prompt.
+- New **Backups** window lists every backup with device, package, version and size on
+  disk, and reinstalls one: the package bound now is removed and the backed-up package
+  re-added, elevated, with live progress.
+- **Back Up All Drivers** exports every third-party package on the PC - the thing worth
+  doing before reinstalling Windows and losing Wi-Fi.
+- **Export Offline Pack (ZIP)** bundles those packages with a README so a fresh install
+  can get a network adapter working with no internet.
+
+### System Restore point before a batch install
+- The elevated worker asks Windows for a checkpoint before the first package. If System
+  Protection is off it says so and the install continues: a restore point is a bonus,
+  never a precondition.
+
+### Device Health
+- New **Device Health** window lists devices Windows reports as broken, with the meaning
+  of each problem code and the fix that applies, in plain English.
+- Disconnected hardware is excluded and counted separately. A healthy machine reports
+  dozens of phantom problem codes; listing those would invent problems that do not exist.
+
+### Application updates (winget)
+- New **App Updates** window lists installed programs with a newer version in the winget
+  repository, showing installed and available versions.
+- You choose which ones update; each runs one at a time with its output shown. Nothing
+  updates in the background and no package is chosen for you.
+
+### Also
+- Healthy devices are no longer reported as problems (`CM_PROB_NONE` is 0, not null).
+- Three new header buttons; the header still reflows and wraps when the window narrows.
+
 ## v2.14.0 · Rev 2026.11.21-R54
 - Top bars reflow instead of clipping; app opens maximized  _(revision +3, notable)_
 

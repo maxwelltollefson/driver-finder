@@ -18,7 +18,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import driver_scanner
+import driver_backup
 import driver_installer
+import tool_windows
 import create_shortcut
 import paths
 import updater
@@ -420,7 +422,7 @@ class InstallationDialog(tk.Toplevel):
 
         self._ticker_running = False
 
-        install_plan = {"devices": []}
+        install_plan = {"devices": [], "restore_point": True}
         for job in self._jobs:
             if job["ok"]:
                 install_plan["devices"].append({
@@ -430,11 +432,44 @@ class InstallationDialog(tk.Toplevel):
 
         self._post_log(f"Phase 1 complete: {len(install_plan['devices'])} of {total} package(s) ready.")
 
+        self._backup_before_install([job["device"] for job in self._jobs if job["ok"]])
+
         plan_file = os.path.join(self.download_base, "install_plan.json")
         with open(plan_file, "w", encoding="utf-8") as f:
             json.dump(install_plan, f, indent=2)
 
         self.after(0, lambda: self.start_elevated_installation(install_plan["devices"]))
+
+    def _backup_before_install(self, devices):
+        """Export the driver packages these devices are about to lose.
+
+        Runs unelevated (pnputil /export-driver needs no admin) so the safety net
+        costs the user no extra UAC prompt. A backup failure is logged and the
+        install continues - it is a net benefit, not a precondition.
+        """
+        result = {"count": 0, "base": "", "manifest": None}
+        devices = [d for d in (devices or []) if d]
+        if not devices:
+            return result
+
+        self._post_log("Phase 1.5: Backing up the driver packages being replaced...")
+        try:
+            manifest = driver_backup.backup_devices(
+                devices, label="before driver update", app_version=APP_VERSION)
+            result["manifest"] = manifest
+            result["base"] = manifest.get("base", "")
+            result["count"] = manifest.get("entry_count", 0)
+            if result["count"]:
+                self._post_log(f"  {result['count']} package(s) backed up to {result['base']}")
+            else:
+                self._post_log("  Nothing to back up: these devices use Windows-owned drivers.")
+            for entry in manifest.get("entries", []):
+                if not entry.get("ok"):
+                    self._post_log(f"  skipped {entry.get('description', '')[:40]}: "
+                                   f"{entry.get('message', '')[:70]}")
+        except Exception as exc:
+            self._post_log(f"  Backup skipped: {exc}")
+        return result
 
     # --- Phase 2: Live Elevated Installation ---
 
@@ -852,6 +887,51 @@ class DriverFinderApp:
         btn_box = tk.Frame(header_top, bg=self.header_bg)
         self._header_btn_box = btn_box
 
+        self.btn_health = tk.Button(
+            btn_box,
+            text="🩺 Device Health",
+            font=("Segoe UI", 9),
+            bg="#334155",
+            fg="#F8FAFC",
+            activebackground="#475569",
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=self.open_device_health
+        )
+
+        self.btn_apps = tk.Button(
+            btn_box,
+            text="📦 App Updates",
+            font=("Segoe UI", 9),
+            bg="#334155",
+            fg="#F8FAFC",
+            activebackground="#475569",
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=self.open_app_updates
+        )
+
+        self.btn_backups = tk.Button(
+            btn_box,
+            text="💾 Backups",
+            font=("Segoe UI", 9),
+            bg="#334155",
+            fg="#F8FAFC",
+            activebackground="#475569",
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=self.open_backups
+        )
+
         self.btn_oem = tk.Button(
             btn_box,
             text="🌐 Manufacturer Support",
@@ -917,6 +997,9 @@ class DriverFinderApp:
         self.btn_check_app_update.pack(side=tk.LEFT, padx=4)
 
         self._header_buttons = [
+            self.btn_health,
+            self.btn_apps,
+            self.btn_backups,
             self.btn_oem,
             btn_devmgmt,
             btn_desktop,
@@ -1946,6 +2029,46 @@ class DriverFinderApp:
             os.startfile("ms-settings:windowsupdate")
         except Exception:
             webbrowser.open("ms-settings:windowsupdate")
+
+    def _tool_palette(self):
+        return {
+            "bg": self.bg_color,
+            "header": self.header_bg,
+            "card": self.card_bg,
+            "border": self.border_color,
+            "text": self.text_primary,
+            "muted": self.text_secondary,
+            "blue": self.accent_blue,
+            "green": self.accent_green,
+            "amber": self.accent_amber,
+        }
+
+    def _open_tool_window(self, cls, attr):
+        """One instance per tool window: re-clicking should raise, not duplicate."""
+        existing = getattr(self, attr, None)
+        try:
+            if existing is not None and existing.winfo_exists():
+                existing.deiconify()
+                existing.lift()
+                existing.focus_force()
+                return
+        except Exception:
+            pass
+        try:
+            window = cls(self.root, self._tool_palette())
+        except Exception as exc:
+            messagebox.showerror("Could not open window", str(exc))
+            return
+        setattr(self, attr, window)
+
+    def open_device_health(self):
+        self._open_tool_window(tool_windows.DeviceHealthWindow, "_win_health")
+
+    def open_app_updates(self):
+        self._open_tool_window(tool_windows.AppUpdatesWindow, "_win_apps")
+
+    def open_backups(self):
+        self._open_tool_window(tool_windows.BackupsWindow, "_win_backups")
 
     def open_device_manager(self):
         """Open Device Manager.

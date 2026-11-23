@@ -16,6 +16,18 @@ The app checks GitHub for a newer release at startup and offers it in a banner w
 
 To run from source: `python main.py` (Windows, Python 3 with tkinter).
 
+## What it does beyond drivers
+
+- **Backup and rollback.** Every install exports the package it replaces first, via
+  `pnputil /export-driver` (no elevation needed). The Backups window lists them and can
+  reinstall one. "Back Up All Drivers" and "Export Offline Pack (ZIP)" cover the
+  reinstall-Windows-later case.
+- **Device Health.** Devices Windows reports as broken, with the meaning of each problem
+  code and the fix. Disconnected hardware is excluded, not counted as a problem.
+- **App updates.** Installed programs with a newer winget version, updated one at a time
+  on your click.
+- **System Restore checkpoint** requested before each batch install, best effort.
+
 ## Compatibility
 
 - **Any display language.** Device enumeration uses `pnputil /format xml`, whose element names are fixed schema names. The old text output is translated on non-English Windows and parsed as zero devices.

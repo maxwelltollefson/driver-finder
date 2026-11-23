@@ -48,6 +48,91 @@ def check_system_reboot_pending():
 
     return len(reasons) > 0
 
+def create_restore_point(description="Driver Finder driver update"):
+    """Ask Windows for a checkpoint. Failure must never block the install."""
+    script = (
+        "try { Checkpoint-Computer -Description '" + description +
+        "' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop; 'RESTORE_POINT_OK' } "
+        "catch { 'RESTORE_POINT_FAILED: ' + $_.Exception.Message }"
+    )
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-Command", script],
+            capture_output=True, text=True, timeout=180,
+            creationflags=CREATE_NO_WINDOW, startupinfo=get_silent_startupinfo()
+        )
+        output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+        if "RESTORE_POINT_OK" in output:
+            # Windows silently skips checkpoints within 24h of the last one.
+            return True, "Restore point requested (Windows may reuse one from the last 24 hours)."
+        return False, output.splitlines()[-1] if output else "restore point request failed"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def run_pnputil(args, timeout=300):
+    try:
+        proc = subprocess.run(
+            ["pnputil"] + args, capture_output=True, text=True, timeout=timeout,
+            creationflags=CREATE_NO_WINDOW, startupinfo=get_silent_startupinfo()
+        )
+        return proc.returncode, ((proc.stdout or "") + (proc.stderr or "")).strip()
+    except Exception as exc:
+        return 1, str(exc)
+
+
+def rollback_driver(plan, status_file, log_file):
+    """Restore a backed-up package: remove what is bound now, re-add the backup."""
+    inf = plan.get("inf", "")
+    backup_inf = plan.get("backup_inf_path", "")
+    device = plan.get("device", "device")
+
+    def report(state, percent, line):
+        update_status(status_file, {
+            "state": state, "job": "rollback_driver", "total": 3,
+            "current_device": device, "percent": percent,
+            "log_line": line, "reboot_required": False,
+        })
+
+    with open(log_file, "a", encoding="utf-8") as log_f:
+        log_f.write("\n=======================================================\n")
+        log_f.write("Rollback: %s -> %s\n" % (device, os.path.basename(backup_inf)))
+        log_f.write("=======================================================\n")
+
+        if not backup_inf or not os.path.isfile(backup_inf):
+            report("error", 0, "Backup package is missing - nothing was changed.")
+            log_f.write("Aborted: backup INF not found at %r\n" % backup_inf)
+            return
+
+        report("installing", 10, "Removing the current driver package...")
+        if inf:
+            rc, out = run_pnputil(["/delete-driver", inf, "/uninstall", "/force"])
+            log_f.write("delete-driver %s -> %s\n%s\n" % (inf, rc, out))
+            if rc not in (0, 3010):
+                report("error", 10, "Could not remove the current package; nothing was changed.")
+                log_f.flush()
+                return
+
+        report("installing", 55, "Reinstalling the backed-up driver...")
+        rc, out = run_pnputil(["/add-driver", backup_inf, "/install"])
+        log_f.write("add-driver %s -> %s\n%s\n" % (backup_inf, rc, out))
+        ok_add = rc in (0, 259, 3010)
+
+        report("installing", 85, "Rescanning hardware...")
+        rc_scan, out_scan = run_pnputil(["/scan-devices"])
+        log_f.write("scan-devices -> %s\n%s\n" % (rc_scan, out_scan))
+        log_f.flush()
+
+        if ok_add:
+            report("finished", 100,
+                   "Rolled back %s. Reboot to finish." % device)
+        else:
+            report("error", 100,
+                   "The old package was removed but the backup did not install. "
+                   "Use Device Manager to reinstall a driver for this device.")
+
+
 def update_status(status_file, data):
     try:
         tmp_file = status_file + ".tmp"
@@ -79,6 +164,11 @@ def main():
     with open(plan_file, "r", encoding="utf-8") as f:
         plan = json.load(f)
 
+    job = plan.get("job", "install_drivers")
+    if job == "rollback_driver":
+        rollback_driver(plan, status_file, log_file)
+        return
+
     devices = plan.get("devices", [])
     total = len(devices)
     reboot_required = False
@@ -96,8 +186,22 @@ def main():
         "reboot_required": False
     })
 
+    if plan.get("restore_point") and total:
+        update_status(status_file, {
+            "state": "starting", "total": total, "current_index": 0,
+            "completed_count": 0, "current_device": "Creating restore point...",
+            "percent": 0, "log_line": "Creating a System Restore point...",
+            "reboot_required": False,
+        })
+        point_ok, point_msg = create_restore_point()
+        plan["_restore_point"] = {"ok": point_ok, "message": point_msg}
+
     with open(log_file, "a", encoding="utf-8") as log_f:
         log_f.write(f"\n=======================================================\n")
+        if plan.get("_restore_point"):
+            log_f.write("Restore point: %s (%s)\n" % (
+                "ok" if plan["_restore_point"]["ok"] else "failed",
+                plan["_restore_point"]["message"]))
         log_f.write(f"Driver Installation Started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         log_f.write(f"Packages to install: {total}\n")
         log_f.write(f"=======================================================\n")

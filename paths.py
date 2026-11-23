@@ -33,6 +33,21 @@ def downloads_dir():
     return path
 
 
+def data_dir():
+    """Per-user writable root shared by every feature."""
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    path = os.path.join(base, "Driver Finder")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def backups_dir():
+    """Driver backups and offline packs live here, newest first on read."""
+    path = os.path.join(data_dir(), "backups")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def cache_dir():
     """Small on-disk cache that survives restarts (catalog query results)."""
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
