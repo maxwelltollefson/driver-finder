@@ -525,6 +525,7 @@ class InstallationDialog(tk.Toplevel):
     def start_elevated_installation(self, ready_devices):
         if not ready_devices:
             self.log("\n❌ No driver packages available to install.")
+            self._nothing_installed = True
             self.on_pipeline_completed()
             return
 
@@ -672,6 +673,14 @@ class InstallationDialog(tk.Toplevel):
             self.btn_rollback_failed.pack_forget()
         self.verify_frame.pack(fill=tk.X, padx=24, pady=(0, 10))
 
+        # The dialog was sized for progress + log only; adding this panel pushes
+        # the rollback button off the bottom edge on a 540px-tall window.
+        self.update_idletasks()
+        needed = self.winfo_reqheight()
+        if needed > self.winfo_height():
+            new_height = min(needed + 16, self.winfo_screenheight() - 90)
+            self.geometry(f"{self.winfo_width()}x{new_height}")
+
     def on_click_rollback_failed(self):
         """Undo this batch for the devices that failed, using the backups just taken."""
         failed = getattr(self, "_failed_verification", [])
@@ -714,9 +723,15 @@ class InstallationDialog(tk.Toplevel):
                 text="Driver installation finished! A computer restart is REQUIRED to finalize updates.",
                 fg="#F59E0B"
             )
+        elif getattr(self, "_nothing_installed", False):
+            self.lbl_subtitle.config(
+                text="Nothing was installed: no driver package could be prepared. "
+                     "See the log for the reason.",
+                fg="#B45309"
+            )
         else:
             self.lbl_subtitle.config(
-                text="Installation completed successfully! All drivers are up to date.",
+                text="Installation completed. Check the verification summary above.",
                 fg="#10B981"
             )
 

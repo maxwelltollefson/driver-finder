@@ -4,6 +4,9 @@ Driver Finder. Every change bumps the revision number; the size of the jump
 shows the scale: **small +1**, **notable +3**, **major +10**. Bump with
 `python bump_version.py --kind small|notable|major --note "..."`.
 
+## v3.4.0 · Rev 2026.11.23-R83
+- Verification panel no longer clipped: dialog grows to fit it; no false success message when nothing was installed  _(revision +3, notable)_
+
 ## v3.3.0 · Rev 2026.11.23-R80
 ### Post-install verification, and a way back
 - After installing, the app re-reads every device from Windows and reports what is
